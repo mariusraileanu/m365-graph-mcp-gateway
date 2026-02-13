@@ -1,0 +1,51 @@
+services:
+  openclaw:
+    build: .
+    container_name: openclaw
+    restart: unless-stopped
+    user: "node"
+    network_mode: "bridge"
+    init: true
+    ports:
+      - "127.0.0.1:18789:18789"
+    volumes:
+      - ./data/.openclaw:/home/node/.openclaw:rw
+      - ./data/.openclaw/openclaw.json:/home/node/.openclaw/openclaw.json:ro
+      - ./data/workspace:/home/node/workspace:rw
+      - ./data/clippy:/home/node/.config/clippy:rw
+      - ./data/whoop:/home/node/.clawdbot/whoop:rw
+    env_file:
+      - .env
+    environment:
+      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_AUTH_TOKEN}
+      OPENCLAW_STATE_DIR: /home/node/.openclaw
+      OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
+      HOME: /home/node
+      XDG_CACHE_HOME: /home/node/.openclaw/cache
+      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+    cpus: "${OPENCLAW_CPUS:-2.0}"
+    mem_limit: "${OPENCLAW_MEM_LIMIT:-4g}"
+    pids_limit: ${OPENCLAW_PIDS_LIMIT:-512}
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    read_only: ${OPENCLAW_READ_ONLY_ROOTFS:-true}
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=512m
+      - /run:rw,nosuid,nodev,size=64m
+      - /var/tmp:rw,nosuid,nodev,size=256m
+      - /home/node/.cache:rw,nosuid,nodev,size=512m
+      - /home/node/.pki:rw,nosuid,nodev,size=64m
+      - /home/node/.local:rw,nosuid,nodev,size=256m
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:18789/ > /dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    command: ["gateway", "run"]

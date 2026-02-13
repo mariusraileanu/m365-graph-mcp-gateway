@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+usage() {
+  cat <<'EOF'
+Usage: bin/openclawctl <command> [args...]
+
+Commands:
+  init                 Initialize runtime config
+  provision            Full sync + recreate + checks
+  validate             Prereq + env + deploy checks
+  smoke                Runtime smoke checks
+  backup               Backup runtime state
+  restore [archive]    Restore runtime state archive
+  rotate-token         Rotate gateway auth token
+  auth-clippy          Sync clippy auth files
+  auth-whoop           Sync whoop auth files
+  cron-sync            Sync cron workspace/tooling/templates
+EOF
+}
+
+cmd="${1:-}"
+shift || true
+
+case "$cmd" in
+  init)
+    exec "${ROOT_DIR}/scripts/setup/init-config.sh" "$@"
+    ;;
+  provision)
+    exec "${ROOT_DIR}/scripts/runtime/provision.sh" "$@"
+    ;;
+  validate)
+    "${ROOT_DIR}/scripts/check/validate-prereqs.sh"
+    "${ROOT_DIR}/scripts/check/validate-env.sh"
+    exec "${ROOT_DIR}/scripts/check/test-deploy.sh"
+    ;;
+  smoke)
+    exec "${ROOT_DIR}/scripts/check/test-runtime.sh" "$@"
+    ;;
+  backup)
+    exec "${ROOT_DIR}/scripts/runtime/backup-state.sh" "$@"
+    ;;
+  restore)
+    exec "${ROOT_DIR}/scripts/runtime/restore-state.sh" "$@"
+    ;;
+  rotate-token)
+    exec "${ROOT_DIR}/scripts/runtime/rotate-gateway-token.sh" "$@"
+    ;;
+  auth-clippy)
+    exec "${ROOT_DIR}/scripts/auth/sync-clippy.sh" "$@"
+    ;;
+  auth-whoop)
+    exec "${ROOT_DIR}/scripts/auth/sync-whoop.sh" "$@"
+    ;;
+  cron-sync)
+    "${ROOT_DIR}/scripts/cron/sync-workspace.sh" "./data/.openclaw/workspace-cron"
+    "${ROOT_DIR}/scripts/cron/sync-tooling.sh" "./data/.openclaw/workspace-cron"
+    "${ROOT_DIR}/scripts/cron/sync-morning-brief.sh" "./data/.openclaw/cron/jobs.json"
+    exec "${ROOT_DIR}/scripts/cron/sync-evening-reflection.sh" "./data/.openclaw/cron/jobs.json"
+    ;;
+  ""|-h|--help|help)
+    usage
+    ;;
+  *)
+    echo "Unknown command: $cmd" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

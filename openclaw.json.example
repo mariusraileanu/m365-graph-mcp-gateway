@@ -1,0 +1,154 @@
+{
+  "meta": {
+    "lastTouchedVersion": "2026.2.10",
+    "lastTouchedAt": "2026-02-13T15:12:43.378Z"
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "compass": {
+        "baseUrl": "https://api.core42.ai/v1",
+        "apiKey": "${COMPASS_API_KEY}",
+        "api": "openai-completions",
+        "models": [
+          {
+            "id": "gpt-4o",
+            "name": "Compass GPT-4o",
+            "reasoning": false,
+            "input": [
+              "text"
+            ],
+            "cost": {
+              "input": 0,
+              "output": 0,
+              "cacheRead": 0,
+              "cacheWrite": 0
+            },
+            "contextWindow": 200000,
+            "maxTokens": 8192
+          }
+        ]
+      }
+    }
+  },
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "compass/gpt-4o"
+      },
+      "models": {
+        "google/gemini-2.5-flash": {},
+        "openai/gpt-5.2": {
+          "alias": "gpt"
+        },
+        "compass/gpt-4o": {
+          "alias": "compass"
+        },
+        "openrouter/arcee-ai/trinity-large-preview:free": {
+          "alias": "trinity"
+        }
+      },
+      "workspace": "/home/node/workspace",
+      "maxConcurrent": 4,
+      "subagents": {
+        "maxConcurrent": 8
+      },
+      "sandbox": {
+        "mode": "off",
+        "workspaceAccess": "rw"
+      }
+    },
+    "list": [
+      {
+        "id": "main",
+        "default": true,
+        "workspace": "/home/node/workspace",
+        "agentDir": "/home/node/.openclaw/agents/main/agent",
+        "model": "compass/gpt-4o"
+      },
+      {
+        "id": "cron",
+        "workspace": "/home/node/.openclaw/workspace-cron",
+        "agentDir": "/home/node/.openclaw/agents/cron/agent",
+        "model": "compass/gpt-4o"
+      }
+    ]
+  },
+  "tools": {
+    "deny": [
+      "apply_patch",
+      "process",
+      "nodes",
+      "canvas"
+    ],
+    "web": {
+      "search": {
+        "enabled": false
+      },
+      "fetch": {
+        "enabled": false
+      }
+    },
+    "exec": {
+      "host": "gateway",
+      "security": "allowlist",
+      "ask": "on-miss",
+      "pathPrepend": [
+        "/home/node/.openclaw/skills/tavily-search/scripts",
+        "/home/node/.openclaw/skills/whoop-central/scripts",
+        "/home/node/.openclaw/skills/weather/scripts"
+      ],
+      "safeBins": [
+        "clippy",
+        "tavily-search",
+        "tavily-extract",
+        "whoop-central",
+        "curl",
+        "weather",
+        "goplaces",
+        "playwright-mcp"
+      ]
+    }
+  },
+  "messages": {
+    "ackReactionScope": "group-mentions"
+  },
+  "commands": {
+    "native": "auto",
+    "nativeSkills": "auto"
+  },
+  "channels": {
+    "telegram": {
+      "enabled": true,
+      "dmPolicy": "pairing",
+      "groupPolicy": "disabled",
+      "streamMode": "partial"
+    }
+  },
+  "gateway": {
+    "port": 18789,
+    "mode": "local",
+    "bind": "lan",
+    "auth": {
+      "mode": "token",
+      "token": "${OPENCLAW_GATEWAY_AUTH_TOKEN}"
+    },
+    "remote": {
+      "token": "${OPENCLAW_GATEWAY_AUTH_TOKEN}"
+    }
+  },
+  "plugins": {
+    "entries": {
+      "telegram": {
+        "enabled": true
+      }
+    }
+  },
+  "browser": {
+    "enabled": true,
+    "defaultProfile": "openclaw",
+    "attachOnly": false,
+    "headless": true,
+    "noSandbox": true
+  }
+}

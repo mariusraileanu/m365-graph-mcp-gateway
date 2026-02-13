@@ -1,0 +1,13 @@
+.env
+.env.bak.*
+
+# Runtime state (contains secrets/tokens/local history)
+data/**
+!data/.gitkeep
+
+# Common local artifacts
+*.log
+*.sqlite
+*.tar.gz
+coverage/
+node_modules/

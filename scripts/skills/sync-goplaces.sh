@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+OPENCLAW_STATE_DIR="${1:-./data/.openclaw}"
+SKILLS_DIR_NAME="${2:-skills}"
+SKILL_NAME="${3:-goplaces}"
+ENV_FILE="${4:-.env}"
+CLAWHUB_VERSION="${CLAWHUB_VERSION:-0.6.1}"
+
+SKILL_DIR="${OPENCLAW_STATE_DIR}/${SKILLS_DIR_NAME}/${SKILL_NAME}"
+
+if [[ ! -f "${SKILL_DIR}/SKILL.md" ]]; then
+  npx -y "clawhub@${CLAWHUB_VERSION}" install --workdir "${OPENCLAW_STATE_DIR}" --dir "${SKILLS_DIR_NAME}" --force "${SKILL_NAME}"
+else
+  echo "Skill already present: ${SKILL_DIR}"
+fi
+
+if [[ -f "${ENV_FILE}" ]]; then
+  if grep -q '^GOOGLE_PLACES_API_KEY=' "${ENV_FILE}"; then
+    echo "GOOGLE_PLACES_API_KEY found in ${ENV_FILE}"
+  else
+    echo "Warning: GOOGLE_PLACES_API_KEY is missing in ${ENV_FILE}" >&2
+  fi
+fi
+
+echo "goplaces skill synced."
+echo "Skill path: ${SKILL_DIR}"
