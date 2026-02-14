@@ -164,48 +164,56 @@ echo "[2/15] Syncing Clippy auth files..."
 echo "[3/15] Syncing WHOOP auth files from .env..."
 "${SCRIPTS_DIR}/auth/sync-whoop.sh" "${4:-.env}" "${5:-./data/whoop}" "$CONTAINER_NAME"
 
-echo "[4/15] Syncing Weather skill..."
+echo "[4/17] Syncing Weather skill..."
 "${SCRIPTS_DIR}/skills/sync-weather.sh" "${6:-./data/.openclaw/skills/weather}" "${7:-./data/.openclaw/skills/weather/scripts/weather}"
 
-echo "[5/15] Syncing Self-Improving skill..."
+echo "[5/17] Syncing Tavily skill..."
+"${SCRIPTS_DIR}/skills/sync-tavily.sh" "./data/.openclaw" "skills" "tavily-search"
+
+echo "[6/17] Syncing WHOOP Central skill..."
+"${SCRIPTS_DIR}/skills/sync-whoop-central.sh" "./data/.openclaw" "skills" "whoop-central"
+
+echo "[7/17] Syncing Self-Improving skill..."
 "${SCRIPTS_DIR}/skills/sync-self-improving.sh" "${8:-./data/.openclaw}" "${9:-skills}" "${10:-self-improving-agent}" "${11:-./data/workspace}"
 
-echo "[6/15] Syncing goplaces skill..."
+echo "[8/17] Syncing goplaces skill..."
 "${SCRIPTS_DIR}/skills/sync-goplaces.sh" "${12:-./data/.openclaw}" "${13:-skills}" "${14:-goplaces}" "${4:-.env}"
 
-echo "[7/15] Syncing playwright-mcp skill..."
+echo "[9/17] Syncing playwright-mcp skill..."
 "${SCRIPTS_DIR}/skills/sync-playwright-mcp.sh" "${12:-./data/.openclaw}" "${13:-skills}" "${15:-playwright-mcp}"
 
-echo "[8/15] Syncing cron workspace personalization..."
+echo "[10/17] Syncing cron workspace personalization..."
 "${SCRIPTS_DIR}/cron/sync-workspace.sh" "./data/.openclaw/workspace-cron"
 
-echo "[9/15] Syncing cron tooling wrappers..."
+echo "[11/17] Syncing cron tooling wrappers..."
 "${SCRIPTS_DIR}/cron/sync-tooling.sh" "./data/.openclaw/workspace-cron"
 
-echo "[10/15] Syncing morning briefing cron template..."
+echo "[12/17] Syncing morning briefing cron template..."
 "${SCRIPTS_DIR}/cron/sync-morning-brief.sh" "${16:-./data/.openclaw/cron/jobs.json}"
 
-echo "[11/15] Syncing evening reflection cron template..."
+echo "[13/17] Syncing evening reflection cron template..."
 "${SCRIPTS_DIR}/cron/sync-evening-reflection.sh" "${16:-./data/.openclaw/cron/jobs.json}"
 
-echo "[12/15] Recreating container..."
+echo "[14/17] Recreating container..."
 docker compose up -d --force-recreate
 wait_for_healthy "$CONTAINER_NAME" "$OPENCLAW_HEALTH_TIMEOUT_SEC"
 "${SCRIPTS_DIR}/runtime/fix-browser-profile-lock.sh" "$CONTAINER_NAME"
 "${SCRIPTS_DIR}/runtime/harden-state-permissions.sh" "$CONTAINER_NAME"
 
-echo "[13/15] Quick auth checks..."
+echo "[15/17] Quick auth checks..."
 run_auth_check "clippy" "Clippy auth" "clippy whoami"
 run_auth_check "whoop" "WHOOP auth refresh" "/home/node/.openclaw/skills/whoop-central/scripts/whoop-central verify --refresh"
 docker exec "$CONTAINER_NAME" sh -lc "/home/node/.openclaw/skills/weather/scripts/weather '${OPENCLAW_CITY}'" || true
+docker exec "$CONTAINER_NAME" sh -lc "test -f /home/node/.openclaw/skills/tavily-search/SKILL.md && tavily-search --help >/dev/null && echo 'tavily-search installed'" || true
+docker exec "$CONTAINER_NAME" sh -lc "test -f /home/node/.openclaw/skills/whoop-central/SKILL.md && echo 'whoop-central installed'" || true
 docker exec "$CONTAINER_NAME" sh -lc "test -f /home/node/.openclaw/skills/self-improving-agent/SKILL.md && echo 'self-improving-agent installed'" || true
 docker exec "$CONTAINER_NAME" sh -lc "test -f /home/node/.openclaw/skills/goplaces/SKILL.md && goplaces --help >/dev/null && echo 'goplaces installed'" || true
 docker exec "$CONTAINER_NAME" sh -lc "test -f /home/node/.openclaw/skills/playwright-mcp/SKILL.md && playwright-mcp --version >/dev/null && echo 'playwright-mcp installed'" || true
 
-echo "[14/15] Writing runtime diagnostics snapshot..."
+echo "[16/17] Writing runtime diagnostics snapshot..."
 "${SCRIPTS_DIR}/runtime/collect-diagnostics.sh" "$CONTAINER_NAME"
 
-echo "[15/15] Runtime smoke checks..."
+echo "[17/17] Runtime smoke checks..."
 SKIP_CHECKS="$OPENCLAW_SKIP_AUTH_CHECKS" "${SCRIPTS_DIR}/check/test-runtime.sh" "$CONTAINER_NAME"
 
 echo "Done."

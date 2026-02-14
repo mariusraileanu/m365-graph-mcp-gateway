@@ -238,6 +238,14 @@ bin/openclawctl auth-clippy
 bin/openclawctl auth-whoop
 ```
 
+Check installed skills in runtime state:
+```bash
+docker exec openclaw sh -lc 'ls -1 /home/node/.openclaw/skills'
+```
+Note:
+- `clippy` is a CLI/binary, not an OpenClaw skill directory.
+- `tavily-search` and `whoop-central` are skill directories and are synced during `bin/openclawctl provision`.
+
 Temporary bypass (secure profile break-glass):
 ```bash
 OPENCLAW_ALLOW_INSECURE_BYPASS=1 OPENCLAW_SKIP_AUTH_CHECKS=clippy,whoop bin/openclawctl provision

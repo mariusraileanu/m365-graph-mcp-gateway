@@ -17,6 +17,7 @@ services:
     env_file:
       - .env
     environment:
+      OPENCLAW_GATEWAY_AUTH_TOKEN: ${OPENCLAW_GATEWAY_AUTH_TOKEN}
       OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_AUTH_TOKEN}
       OPENCLAW_STATE_DIR: /home/node/.openclaw
       OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
