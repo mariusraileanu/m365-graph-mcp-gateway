@@ -49,7 +49,7 @@ require_nonempty() {
 }
 
 errors=0
-for key in OPENCLAW_GATEWAY_AUTH_TOKEN COMPASS_API_KEY TELEGRAM_BOT_TOKEN OPENCLAW_TELEGRAM_TARGET_ID; do
+for key in COMPASS_API_KEY TELEGRAM_BOT_TOKEN OPENCLAW_TELEGRAM_TARGET_ID; do
   if ! require_nonempty "$key"; then
     errors=1
   fi
