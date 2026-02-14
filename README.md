@@ -79,6 +79,10 @@ Required env keys for day-to-day use:
 - `OPENCLAW_GATEWAY_AUTH_TOKEN`
 - `OPENCLAW_TELEGRAM_TARGET_ID` (chat/user id used by cron message delivery)
 
+Default gateway posture in this repo is intentionally single-host:
+- `gateway.bind` is `loopback` in `openclaw.json.example`
+- this avoids LAN-exposed gateway access and reduces pairing/token edge cases on server installs
+
 ## Azure VM Runbook
 
 Use Ubuntu 22.04+ VM with Docker Engine + Compose v2.
