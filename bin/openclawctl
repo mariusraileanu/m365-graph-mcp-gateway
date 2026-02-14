@@ -15,6 +15,7 @@ Commands:
   backup               Backup runtime state
   restore [archive]    Restore runtime state archive
   rotate-token         Rotate gateway auth token
+  azure-update         Update existing Azure VM deployment (mode=update)
   auth-clippy          Sync clippy auth files
   auth-whoop           Sync whoop auth files
   auth-sync-all        Sync whoop + clippy auth files
@@ -48,6 +49,9 @@ case "$cmd" in
     ;;
   rotate-token)
     exec "${ROOT_DIR}/scripts/runtime/rotate-gateway-token.sh" "$@"
+    ;;
+  azure-update)
+    exec "${ROOT_DIR}/scripts/runtime/azure-update.sh" "$@"
     ;;
   auth-clippy)
     exec "${ROOT_DIR}/scripts/auth/sync-clippy.sh" "$@"

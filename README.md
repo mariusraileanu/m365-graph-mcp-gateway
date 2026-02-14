@@ -151,6 +151,11 @@ infra/azure/deploy-azure.sh \
   --mode update
 ```
 
+Shortcut:
+```bash
+bin/openclawctl azure-update --resource-group <rg> --vm-name <vm-name>
+```
+
 Persistence:
 - `data/.openclaw` -> OpenClaw state, config, cron jobs
 - `data/workspace` -> agent workspace
