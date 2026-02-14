@@ -6,6 +6,7 @@ cd "$ROOT_DIR"
 
 CONTAINER_NAME="${1:-openclaw}"
 SKIP_CHECKS="${SKIP_CHECKS:-}"
+OPENCLAW_CITY="${OPENCLAW_CITY:-Abu Dhabi}"
 
 should_skip() {
   local name="$1"
@@ -50,7 +51,7 @@ print("ok")
 PY'
 
 echo "[6/8] Weather helper works..."
-docker exec "$CONTAINER_NAME" sh -lc '/home/node/.openclaw/skills/weather/scripts/weather "Abu Dhabi"' >/dev/null
+docker exec "$CONTAINER_NAME" sh -lc "/home/node/.openclaw/skills/weather/scripts/weather \"${OPENCLAW_CITY}\"" >/dev/null
 
 echo "[7/8] Clippy auth check..."
 if should_skip "clippy"; then

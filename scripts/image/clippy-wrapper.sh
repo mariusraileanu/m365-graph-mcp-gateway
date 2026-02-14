@@ -2,7 +2,9 @@
 set -euo pipefail
 
 # Compatibility + timezone shim for legacy prompts/agents.
-# This normalizes calendar outputs to Asia/Dubai (GMT+4) to avoid source-timezone confusion.
+# This normalizes calendar outputs to OPENCLAW_LOCAL_TIMEZONE to avoid source-timezone confusion.
+LOCAL_TZ="${OPENCLAW_LOCAL_TIMEZONE:-Asia/Dubai}"
+LOCAL_CITY="${OPENCLAW_CITY:-Abu Dhabi}"
 
 run_clippy() {
   exec /opt/bun/bin/bun --cwd /opt/clippy ./src/cli.ts "$@"
@@ -119,7 +121,7 @@ run_calendar_dubai() {
     /opt/bun/bin/bun --cwd /opt/clippy ./src/cli.ts calendar "${args[@]}" --json >"$tmp_json"
   fi
 
-  python3 - "$tmp_json" "$want_json" <<'PY'
+  python3 - "$tmp_json" "$want_json" "$LOCAL_TZ" "$LOCAL_CITY" <<'PY'
 import json
 import sys
 from datetime import datetime
@@ -127,6 +129,8 @@ from zoneinfo import ZoneInfo
 
 src = sys.argv[1]
 want_json = sys.argv[2] == "1"
+target_tz = sys.argv[3] or "Asia/Dubai"
+target_city = sys.argv[4] or ""
 
 with open(src, "r", encoding="utf-8") as f:
     data = json.load(f)
@@ -148,7 +152,11 @@ def to_dubai(dt_str, tz_name):
     except Exception:
         src_tz = ZoneInfo("UTC")
     dt = datetime.fromisoformat(dt_str).replace(tzinfo=src_tz)
-    return dt.astimezone(ZoneInfo("Asia/Dubai"))
+    try:
+        out_tz = ZoneInfo(target_tz)
+    except Exception:
+        out_tz = ZoneInfo("UTC")
+    return dt.astimezone(out_tz)
 
 out = []
 for e in data:
@@ -159,10 +167,10 @@ for e in data:
     edt = to_dubai(end.get("DateTime"), end.get("TimeZone"))
     if sdt:
         start["DateTime"] = sdt.isoformat(timespec="seconds")
-        start["TimeZone"] = "Asia/Dubai"
+        start["TimeZone"] = target_tz
     if edt:
         end["DateTime"] = edt.isoformat(timespec="seconds")
-        end["TimeZone"] = "Asia/Dubai"
+        end["TimeZone"] = target_tz
     e2["Start"] = start
     e2["End"] = end
     out.append((sdt, edt, e2))
@@ -178,7 +186,8 @@ else:
         raise SystemExit(0)
     first = out[0][0]
     title_date = first.strftime("%a, %b %d") if first else "Selected day"
-    print(f"\n📆 Calendar for {title_date} (GMT+4, Abu Dhabi)")
+    city_suffix = f", {target_city}" if target_city else ""
+    print(f"\n📆 Calendar for {title_date} ({target_tz}{city_suffix})")
     print("────────────────────────────────────────")
     for idx, (sdt, edt, ev) in enumerate(out, start=1):
         subject = ev.get("Subject", "Untitled")

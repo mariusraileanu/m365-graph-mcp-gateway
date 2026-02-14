@@ -36,7 +36,7 @@ Options:
   --admin-user       Admin username (default: azureuser)
   --vm-size          VM size (default: Standard_D4s_v5)
   --repo-url         Repo URL for cloud-init bootstrap
-                     (default: https://github.com/mariusraileanu/openclaw-docker.git)
+                     (default: https://github.com/your-org/openclaw-docker.git)
   --private          Deploy VM with no public IP and no inbound NSG rules
   --vnet-name        VNet name for private mode (default: vnet-openclaw)
   --subnet-name      Subnet name for private mode (default: snet-openclaw)
@@ -51,7 +51,7 @@ VM_NAME="${AZURE_VM_NAME:-}"
 LOCATION="${AZURE_LOCATION:-uaenorth}"
 ADMIN_USER="${AZURE_ADMIN_USER:-azureuser}"
 VM_SIZE="${AZURE_VM_SIZE:-Standard_D4s_v5}"
-REPO_URL="${AZURE_REPO_URL:-https://github.com/mariusraileanu/openclaw-docker.git}"
+REPO_URL="${AZURE_REPO_URL:-https://github.com/your-org/openclaw-docker.git}"
 COPY_ENV="${AZURE_COPY_ENV:-0}"
 PRIVATE_MODE="${AZURE_PRIVATE_MODE:-0}"
 VNET_NAME="${AZURE_VNET_NAME:-vnet-openclaw}"

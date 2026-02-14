@@ -13,7 +13,7 @@ cat > "${DEST_SCRIPT_PATH}" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
-location="${*:-Abu Dhabi}"
+location="${*:-${OPENCLAW_CITY:-Abu Dhabi}}"
 location_q="${location// /+}"
 
 wttr_out="$(curl -fsS --max-time 8 "https://wttr.in/${location_q}?format=3" 2>/dev/null || true)"
@@ -77,4 +77,3 @@ chmod -R a+rX "${DEST_SKILL_DIR}"
 
 echo "Weather skill synced to: ${DEST_SKILL_DIR}"
 echo "Weather helper script: ${DEST_SCRIPT_PATH}"
-

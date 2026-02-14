@@ -2,6 +2,10 @@
 set -euo pipefail
 
 JOBS_FILE="${1:-./data/.openclaw/cron/jobs.json}"
+OWNER_NAME="${OPENCLAW_OWNER_NAME:-User}"
+LOCAL_TZ="${OPENCLAW_LOCAL_TIMEZONE:-UTC}"
+CITY="${OPENCLAW_CITY:-your city}"
+TELEGRAM_TARGET="${OPENCLAW_TELEGRAM_TARGET_ID:-}"
 
 mkdir -p "$(dirname "$JOBS_FILE")"
 if [[ ! -f "$JOBS_FILE" ]]; then
@@ -15,10 +19,14 @@ fi
 
 JOBS_FILE_ABS="$(cd "$(dirname "$JOBS_FILE")" && pwd)/$(basename "$JOBS_FILE")"
 
-JOBS_FILE="$JOBS_FILE_ABS" node <<'EOF'
+JOBS_FILE="$JOBS_FILE_ABS" OWNER_NAME="$OWNER_NAME" LOCAL_TZ="$LOCAL_TZ" CITY="$CITY" TELEGRAM_TARGET="$TELEGRAM_TARGET" node <<'EOF'
 const fs = require("fs");
 
 const jobsPath = process.env.JOBS_FILE;
+const ownerName = process.env.OWNER_NAME || "User";
+const localTz = process.env.LOCAL_TZ || "UTC";
+const city = process.env.CITY || "your city";
+const telegramTarget = process.env.TELEGRAM_TARGET || "";
 const raw = fs.readFileSync(jobsPath, "utf8");
 const doc = JSON.parse(raw);
 
@@ -32,9 +40,9 @@ const jobId = "7025fca3-12a3-42e2-b586-38fadc60b764";
 const message = `You are Jarvis preparing the daily 08:00 briefing.
 You are executing the "Morning Brief" task using OpenClaw.
 
-Audience: Marius.
-Time zone: Asia/Dubai (GMT+4). Render ALL times in GMT+4.
-Date anchor: "today" in Asia/Dubai.
+Audience: ${ownerName}.
+Time zone: ${localTz}. Render ALL times in ${localTz}.
+Date anchor: "today" in ${localTz}.
 
 Goal:
 Send one high-signal morning briefing message to Telegram in this exact section order:
@@ -51,7 +59,7 @@ Execution rules:
   1. /home/node/.openclaw/workspace-cron/bin/oc_whoop_today_json
   2. /home/node/.openclaw/workspace-cron/bin/oc_calendar_today_json
   3. /home/node/.openclaw/workspace-cron/bin/oc_email_unread_json
-  4. /home/node/.openclaw/workspace-cron/bin/oc_weather_abu_dhabi_json
+  4. /home/node/.openclaw/workspace-cron/bin/oc_weather_local_json
   5. /home/node/.openclaw/workspace-cron/bin/oc_news_ai_health_json
 - Each command returns a JSON envelope:
   - ok (bool), source, exit_code, timed_out, stdout, stderr, data (parsed JSON when available).
@@ -87,7 +95,7 @@ Content requirements:
 - Today:
   - Source meetings ONLY from oc_calendar_today_json.stdout output.
   - Include ALL meetings in the same order and keep titles faithful.
-  - Include weather line.
+  - Include weather line for ${city}.
   - Add move-suggestion lines only if conflict/overload exists.
   - If conflict is high-impact or ambiguous, add:
     "Approval needed: Should I suggest rescheduling <meeting>?"
@@ -104,7 +112,7 @@ Content requirements:
 Delivery rules:
 - You MUST call message tool exactly once:
   - channel: telegram
-  - target: 8372003460
+  - target: ${telegramTarget}
   - text: telegramMessage
 - Do NOT send confirmation/follow-up messages.
 - Do NOT send any second message.
@@ -127,14 +135,14 @@ const createdAtMs = previous?.createdAtMs ?? now;
 const job = {
   id: jobId,
   name: "Morning Brief 08:00",
-  description: "Daily 08:00 GMT+4 briefing with WHOOP-first summary, calendar optimization, emails, weather, and news.",
+  description: "Daily 08:00 briefing with WHOOP-first summary, calendar optimization, emails, weather, and news.",
   enabled: true,
   createdAtMs,
   updatedAtMs: now,
   schedule: {
     kind: "cron",
     expr: "0 8 * * *",
-    tz: "Asia/Dubai",
+    tz: localTz,
   },
   sessionTarget: "isolated",
   wakeMode: "now",

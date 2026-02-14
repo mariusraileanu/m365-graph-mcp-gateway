@@ -2,6 +2,9 @@
 set -euo pipefail
 
 JOBS_FILE="${1:-./data/.openclaw/cron/jobs.json}"
+OWNER_NAME="${OPENCLAW_OWNER_NAME:-User}"
+LOCAL_TZ="${OPENCLAW_LOCAL_TIMEZONE:-UTC}"
+TELEGRAM_TARGET="${OPENCLAW_TELEGRAM_TARGET_ID:-}"
 
 mkdir -p "$(dirname "$JOBS_FILE")"
 if [[ ! -f "$JOBS_FILE" ]]; then
@@ -15,10 +18,13 @@ fi
 
 JOBS_FILE_ABS="$(cd "$(dirname "$JOBS_FILE")" && pwd)/$(basename "$JOBS_FILE")"
 
-JOBS_FILE="$JOBS_FILE_ABS" node <<'EOF'
+JOBS_FILE="$JOBS_FILE_ABS" OWNER_NAME="$OWNER_NAME" LOCAL_TZ="$LOCAL_TZ" TELEGRAM_TARGET="$TELEGRAM_TARGET" node <<'EOF'
 const fs = require("fs");
 
 const jobsPath = process.env.JOBS_FILE;
+const ownerName = process.env.OWNER_NAME || "User";
+const localTz = process.env.LOCAL_TZ || "UTC";
+const telegramTarget = process.env.TELEGRAM_TARGET || "";
 const raw = fs.readFileSync(jobsPath, "utf8");
 const doc = JSON.parse(raw);
 
@@ -32,9 +38,9 @@ const jobId = "39b6d8f8-8b6b-46be-96c2-9f64d735a9e2";
 const message = `You are Jarvis preparing the daily 18:00 evening reflection.
 You are executing the "Evening Reflection" task using OpenClaw.
 
-Audience: Marius.
-Time zone: Asia/Dubai (GMT+4). Render ALL times in GMT+4.
-Date anchor: "today" and "tomorrow" in Asia/Dubai.
+Audience: ${ownerName}.
+Time zone: ${localTz}. Render ALL times in ${localTz}.
+Date anchor: "today" and "tomorrow" in ${localTz}.
 
 Goal:
 Send one end-of-day Telegram summary with:
@@ -88,7 +94,7 @@ Formatting requirements for telegramMessage:
 Delivery rules:
 - You MUST call message tool exactly once:
   - channel: telegram
-  - target: 8372003460
+  - target: ${telegramTarget}
   - text: telegramMessage
 - Do NOT send any second confirmation/follow-up message.
 - Do NOT send any second message.
@@ -113,14 +119,14 @@ const createdAtMs = previous?.createdAtMs ?? now;
 const job = {
   id: jobId,
   name: "Evening Reflection 18:00",
-  description: "Daily 18:00 GMT+4 reflection with completed/pending tasks, reply-needed emails, calendar deltas, and tomorrow highlights.",
+  description: "Daily 18:00 reflection with completed/pending tasks, reply-needed emails, calendar deltas, and tomorrow highlights.",
   enabled: true,
   createdAtMs,
   updatedAtMs: now,
   schedule: {
     kind: "cron",
     expr: "0 18 * * *",
-    tz: "Asia/Dubai",
+    tz: localTz,
   },
   sessionTarget: "isolated",
   wakeMode: "now",

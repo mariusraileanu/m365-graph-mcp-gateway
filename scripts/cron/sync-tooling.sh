@@ -127,12 +127,12 @@ exec "${SCRIPT_DIR}/oc_exec_json.sh" "clippy.mail.unread" "${OC_TIMEOUT_SEC:-40}
   clippy mail inbox --unread --limit 30 --json
 EOF
 
-cat > "${BIN_DIR}/oc_weather_abu_dhabi_json" <<'EOF'
+cat > "${BIN_DIR}/oc_weather_local_json" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec "${SCRIPT_DIR}/oc_exec_json.sh" "weather.abu_dhabi" "${OC_TIMEOUT_SEC:-20}" -- \
-  weather "Abu Dhabi"
+exec "${SCRIPT_DIR}/oc_exec_json.sh" "weather.local" "${OC_TIMEOUT_SEC:-20}" -- \
+  weather "${OPENCLAW_CITY:-Abu Dhabi}"
 EOF
 
 cat > "${BIN_DIR}/oc_news_ai_health_json" <<'EOF'
@@ -149,7 +149,7 @@ chmod 0755 \
   "${BIN_DIR}/oc_calendar_today_json" \
   "${BIN_DIR}/oc_calendar_tomorrow_json" \
   "${BIN_DIR}/oc_email_unread_json" \
-  "${BIN_DIR}/oc_weather_abu_dhabi_json" \
+  "${BIN_DIR}/oc_weather_local_json" \
   "${BIN_DIR}/oc_news_ai_health_json"
 
 echo "Cron tooling synced at: ${BIN_DIR}"

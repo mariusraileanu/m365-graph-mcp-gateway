@@ -96,6 +96,7 @@ fi
 
 OPENCLAW_HEALTH_TIMEOUT_SEC="${OPENCLAW_HEALTH_TIMEOUT_SEC:-90}"
 OPENCLAW_SKIP_AUTH_CHECKS="${OPENCLAW_SKIP_AUTH_CHECKS:-}"
+OPENCLAW_CITY="${OPENCLAW_CITY:-Abu Dhabi}"
 "${SCRIPTS_DIR}/check/validate-secure-profile.sh"
 
 should_skip_check() {
@@ -196,7 +197,7 @@ wait_for_healthy "$CONTAINER_NAME" "$OPENCLAW_HEALTH_TIMEOUT_SEC"
 echo "[13/15] Quick auth checks..."
 run_auth_check "clippy" "Clippy auth" "clippy whoami"
 run_auth_check "whoop" "WHOOP auth refresh" "/home/node/.openclaw/skills/whoop-central/scripts/whoop-central verify --refresh"
-docker exec "$CONTAINER_NAME" sh -lc "/home/node/.openclaw/skills/weather/scripts/weather 'Abu Dhabi'" || true
+docker exec "$CONTAINER_NAME" sh -lc "/home/node/.openclaw/skills/weather/scripts/weather '${OPENCLAW_CITY}'" || true
 docker exec "$CONTAINER_NAME" sh -lc "test -f /home/node/.openclaw/skills/self-improving-agent/SKILL.md && echo 'self-improving-agent installed'" || true
 docker exec "$CONTAINER_NAME" sh -lc "test -f /home/node/.openclaw/skills/goplaces/SKILL.md && goplaces --help >/dev/null && echo 'goplaces installed'" || true
 docker exec "$CONTAINER_NAME" sh -lc "test -f /home/node/.openclaw/skills/playwright-mcp/SKILL.md && playwright-mcp --version >/dev/null && echo 'playwright-mcp installed'" || true

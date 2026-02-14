@@ -59,6 +59,12 @@ docker exec -it openclaw clippy login --interactive
 docker exec -it openclaw sh -lc "/home/node/.openclaw/skills/whoop-central/scripts/whoop-central auth"
 ```
 
+Required env keys for day-to-day use:
+- `COMPASS_API_KEY`
+- `TELEGRAM_BOT_TOKEN`
+- `OPENCLAW_GATEWAY_AUTH_TOKEN`
+- `OPENCLAW_TELEGRAM_TARGET_ID` (chat/user id used by cron message delivery)
+
 ## Azure VM Runbook
 
 Use Ubuntu 22.04+ VM with Docker Engine + Compose v2.
@@ -103,6 +109,7 @@ infra/azure/deploy-azure.sh \
 Notes:
 - `--copy-env` is intentionally blocked in `--private` mode.
 - Use Bastion/VPN/jumpbox for VM access in private mode.
+- Set `AZURE_REPO_URL` in `.env.azure` to your own public/private repo URL.
 
 To also copy local `.env` and run remote build+provision:
 ```bash
@@ -162,6 +169,11 @@ Manual secret scan:
 ```bash
 scripts/check/check-secret-leaks.sh
 ```
+
+Public-readiness checklist:
+- Keep `.env`, `.env.azure`, and all `data/**` out of git.
+- Run `scripts/check/check-secret-leaks.sh` before pushing.
+- Avoid hardcoding names, chat IDs, locations, and repo URLs in scripts; use env vars.
 
 ## Troubleshooting
 
