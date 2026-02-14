@@ -34,8 +34,10 @@ for file in "${required_files[@]}"; do
 done
 
 ensure_dir_secure "${DEST_CLIPPY_DIR}"
-cp "${HOST_CLIPPY_DIR}/config.json" "${DEST_CLIPPY_DIR}/config.json"
-cp "${HOST_CLIPPY_DIR}/token-cache.json" "${DEST_CLIPPY_DIR}/token-cache.json"
+if [[ "$(cd "${HOST_CLIPPY_DIR}" && pwd)" != "$(cd "${DEST_CLIPPY_DIR}" && pwd)" ]]; then
+  cp "${HOST_CLIPPY_DIR}/config.json" "${DEST_CLIPPY_DIR}/config.json"
+  cp "${HOST_CLIPPY_DIR}/token-cache.json" "${DEST_CLIPPY_DIR}/token-cache.json"
+fi
 ensure_file_secure "${DEST_CLIPPY_DIR}/config.json"
 ensure_file_secure "${DEST_CLIPPY_DIR}/token-cache.json"
 
@@ -43,7 +45,9 @@ ensure_file_secure "${DEST_CLIPPY_DIR}/token-cache.json"
 # Clippy can reuse saved browser session cookies from storage-state.json
 # when token refresh is no longer valid.
 if [[ -f "${HOST_CLIPPY_DIR}/storage-state.json" ]]; then
-  cp "${HOST_CLIPPY_DIR}/storage-state.json" "${DEST_CLIPPY_DIR}/storage-state.json"
+  if [[ "$(cd "${HOST_CLIPPY_DIR}" && pwd)" != "$(cd "${DEST_CLIPPY_DIR}" && pwd)" ]]; then
+    cp "${HOST_CLIPPY_DIR}/storage-state.json" "${DEST_CLIPPY_DIR}/storage-state.json"
+  fi
   ensure_file_secure "${DEST_CLIPPY_DIR}/storage-state.json"
   echo "Synced optional browser session file: ${DEST_CLIPPY_DIR}/storage-state.json"
 else
