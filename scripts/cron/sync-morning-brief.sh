@@ -7,6 +7,11 @@ LOCAL_TZ="${OPENCLAW_LOCAL_TIMEZONE:-UTC}"
 CITY="${OPENCLAW_CITY:-your city}"
 TELEGRAM_TARGET="${OPENCLAW_TELEGRAM_TARGET_ID:-}"
 
+if [[ -z "$TELEGRAM_TARGET" ]]; then
+  echo "Error: OPENCLAW_TELEGRAM_TARGET_ID is required for morning brief cron delivery." >&2
+  exit 1
+fi
+
 mkdir -p "$(dirname "$JOBS_FILE")"
 if [[ ! -f "$JOBS_FILE" ]]; then
   cat > "$JOBS_FILE" <<'EOF'
@@ -117,7 +122,7 @@ MESSAGE="${MESSAGE//__LOCAL_TZ__/$LOCAL_TZ}"
 MESSAGE="${MESSAGE//__CITY__/$CITY}"
 MESSAGE="${MESSAGE//__TELEGRAM_TARGET__/$TELEGRAM_TARGET}"
 
-JOBS_FILE="$JOBS_FILE_ABS" LOCAL_TZ="$LOCAL_TZ" MESSAGE="$MESSAGE" python3 <<'PY'
+JOBS_FILE="$JOBS_FILE_ABS" LOCAL_TZ="$LOCAL_TZ" MESSAGE="$MESSAGE" TELEGRAM_TARGET="$TELEGRAM_TARGET" python3 <<'PY'
 import json
 import os
 import time
@@ -125,6 +130,7 @@ import time
 jobs_path = os.environ["JOBS_FILE"]
 local_tz = os.environ.get("LOCAL_TZ", "UTC")
 message = os.environ["MESSAGE"]
+telegram_target = os.environ.get("TELEGRAM_TARGET", "")
 job_id = "7025fca3-12a3-42e2-b586-38fadc60b764"
 
 with open(jobs_path, "r", encoding="utf-8") as f:
@@ -158,8 +164,9 @@ job = {
         "model": "compass/gpt-4o",
     },
     "delivery": {
-        "mode": "none",
-        "channel": "last",
+        "mode": "channel",
+        "channel": "telegram",
+        "target": telegram_target,
     },
     "state": previous.get("state", {}) if isinstance(previous, dict) else {},
     "agentId": "cron",
