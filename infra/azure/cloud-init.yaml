@@ -45,6 +45,10 @@ write_files:
       chown azureuser:azureuser .env || true
       chmod 600 .env || true
       [[ -f data/.openclaw/openclaw.json ]] || bin/openclawctl init
+      mkdir -p data/.openclaw data/workspace data/clippy data/whoop
+      chown -R azureuser:azureuser data || true
+      chmod 700 data data/.openclaw data/workspace data/clippy data/whoop || true
+      find data/.openclaw -type f -name "*.json" -exec chmod 600 {} \; 2>/dev/null || true
 
       cat >/etc/systemd/system/openclaw-compose.service <<'EOF'
       [Unit]

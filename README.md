@@ -114,6 +114,7 @@ Security defaults in Azure deploy:
 - SSH key auth only (`--authentication-type ssh`)
 - Password login disabled via cloud-init (`PasswordAuthentication no`)
 - SSH allow rule is enforced on both NIC NSG and subnet NSG (non-private mode)
+- Bootstrap enforces restrictive state permissions (`data/.openclaw` and JSON files)
 
 The script auto-loads `.env.azure` if present, and CLI flags override file values.
 
