@@ -67,6 +67,12 @@ Notes:
 - WHOOP can be fully env-driven (`WHOOP_*` in `.env`).
 - Clippy depends on user session files; if missing, `auth-sync-all` warns but still completes WHOOP sync.
 
+For laptop -> Azure VM -> Docker setups, use:
+```bash
+infra/azure/sync-clippy-from-laptop.sh --host <vm-public-ip>
+```
+This copies local `~/.config/clippy` auth files to the VM and syncs them into the running container.
+
 Required env keys for day-to-day use:
 - `COMPASS_API_KEY`
 - `TELEGRAM_BOT_TOKEN`
