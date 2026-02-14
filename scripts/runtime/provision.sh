@@ -217,7 +217,7 @@ if [[ "$clippy_sync_ok" == "1" ]]; then
 else
   echo "Skipped Clippy auth check (sync failed earlier)."
 fi
-run_auth_check "whoop" "WHOOP auth refresh" "/home/node/.openclaw/skills/whoop-central/scripts/whoop-central verify --refresh"
+run_auth_check "whoop" "WHOOP auth refresh" "if command -v whoop-central >/dev/null 2>&1; then whoop-central verify --refresh; elif [ -x /home/node/.openclaw/skills/whoop-central/scripts/whoop-central ]; then /home/node/.openclaw/skills/whoop-central/scripts/whoop-central verify --refresh; else echo 'whoop-central command not found' >&2; exit 1; fi"
 docker exec "$CONTAINER_NAME" sh -lc "/home/node/.openclaw/skills/weather/scripts/weather '${OPENCLAW_CITY}'" || true
 docker exec "$CONTAINER_NAME" sh -lc "test -f /home/node/.openclaw/skills/tavily-search/SKILL.md && tavily-search --help >/dev/null && echo 'tavily-search installed'" || true
 docker exec "$CONTAINER_NAME" sh -lc "test -f /home/node/.openclaw/skills/whoop-central/SKILL.md && echo 'whoop-central installed'" || true
