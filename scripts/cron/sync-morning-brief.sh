@@ -6,6 +6,13 @@ OWNER_NAME="${OPENCLAW_OWNER_NAME:-User}"
 LOCAL_TZ="${OPENCLAW_LOCAL_TIMEZONE:-UTC}"
 CITY="${OPENCLAW_CITY:-your city}"
 TELEGRAM_TARGET="${OPENCLAW_TELEGRAM_TARGET_ID:-}"
+if [[ -z "$TELEGRAM_TARGET" && -f ./.env ]]; then
+  TELEGRAM_TARGET="$(grep -m1 '^OPENCLAW_TELEGRAM_TARGET_ID=' ./.env | cut -d= -f2- || true)"
+  TELEGRAM_TARGET="${TELEGRAM_TARGET%\"}"
+  TELEGRAM_TARGET="${TELEGRAM_TARGET#\"}"
+  TELEGRAM_TARGET="${TELEGRAM_TARGET%\'}"
+  TELEGRAM_TARGET="${TELEGRAM_TARGET#\'}"
+fi
 
 if [[ -z "$TELEGRAM_TARGET" ]]; then
   echo "Error: OPENCLAW_TELEGRAM_TARGET_ID is required for morning brief cron delivery." >&2

@@ -75,6 +75,22 @@ auth["token"] = token
 remote = gateway.setdefault("remote", {})
 remote["token"] = token
 
+tools = obj.setdefault("tools", {})
+exec_cfg = tools.setdefault("exec", {})
+safe_bins = exec_cfg.setdefault("safeBins", [])
+required_bins = [
+    "oc_exec_json.sh",
+    "oc_whoop_today_json",
+    "oc_calendar_today_json",
+    "oc_calendar_tomorrow_json",
+    "oc_email_unread_json",
+    "oc_weather_local_json",
+    "oc_news_ai_health_json",
+]
+for b in required_bins:
+    if b not in safe_bins:
+        safe_bins.append(b)
+
 with open(cfg_path, "w", encoding="utf-8") as f:
     json.dump(obj, f, indent=2)
     f.write("\n")
