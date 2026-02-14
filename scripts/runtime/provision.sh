@@ -42,8 +42,10 @@ for provider_name, provider_cfg in providers.items():
 gateway = obj.get("gateway") or {}
 auth_token = (gateway.get("auth") or {}).get("token")
 remote_token = (gateway.get("remote") or {}).get("token")
-# Gateway token fields may be empty or literal depending on auth mode.
-# Do not enforce placeholder-only policy here.
+if auth_token is not None and not is_placeholder(auth_token):
+    errors.append("gateway.auth.token must use an env placeholder (found plaintext)")
+if remote_token is not None and not is_placeholder(remote_token):
+    errors.append("gateway.remote.token must use an env placeholder (found plaintext)")
 
 if errors:
     print("Config secret validation failed:", file=sys.stderr)
@@ -61,6 +63,20 @@ mkdir -p ./data/.openclaw/workspace-cron ./data/.openclaw/agents/cron/agent
 
 OPENCLAW_PROFILE="${OPENCLAW_PROFILE:-secure}"
 CONTAINER_NAME="${1:-openclaw}"
+gateway_token="${OPENCLAW_GATEWAY_AUTH_TOKEN:-}"
+if [[ -z "$gateway_token" && -f "$ENV_FILE" ]]; then
+  gateway_token="$(grep -m1 '^OPENCLAW_GATEWAY_AUTH_TOKEN=' "$ENV_FILE" | cut -d= -f2- || true)"
+  gateway_token="${gateway_token%\"}"
+  gateway_token="${gateway_token#\"}"
+  gateway_token="${gateway_token%\'}"
+  gateway_token="${gateway_token#\'}"
+fi
+
+if [[ -z "$gateway_token" ]]; then
+  echo "Error: OPENCLAW_GATEWAY_AUTH_TOKEN is missing or empty." >&2
+  echo "Set it in ${ENV_FILE} (or export it) before recreating." >&2
+  exit 1
+fi
 
 validate_runtime_secrets
 

@@ -130,7 +130,11 @@
     "mode": "local",
     "bind": "loopback",
     "auth": {
-      "mode": "off"
+      "mode": "token",
+      "token": "${OPENCLAW_GATEWAY_AUTH_TOKEN}"
+    },
+    "remote": {
+      "token": "${OPENCLAW_GATEWAY_AUTH_TOKEN}"
     }
   },
   "plugins": {

@@ -76,15 +76,12 @@ This copies local `~/.config/clippy` auth files to the VM and syncs them into th
 Required env keys for day-to-day use:
 - `COMPASS_API_KEY`
 - `TELEGRAM_BOT_TOKEN`
+- `OPENCLAW_GATEWAY_AUTH_TOKEN`
 - `OPENCLAW_TELEGRAM_TARGET_ID` (chat/user id used by cron message delivery)
 
 Default gateway posture in this repo is intentionally single-host:
 - `gateway.bind` is `loopback` in `openclaw.json.example`
-- `gateway.auth.mode` is `off` in `openclaw.json.example` (tokenless local gateway for TUI/cron/Telegram workflows)
 - this avoids LAN-exposed gateway access and reduces pairing/token edge cases on server installs
-
-Optional (only if you switch gateway auth back to token mode):
-- `OPENCLAW_GATEWAY_AUTH_TOKEN`
 
 ## Azure VM Runbook
 
