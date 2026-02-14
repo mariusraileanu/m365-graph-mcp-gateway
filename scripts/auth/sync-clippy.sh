@@ -38,6 +38,12 @@ if [[ "$(cd "${HOST_CLIPPY_DIR}" && pwd)" != "$(cd "${DEST_CLIPPY_DIR}" && pwd)"
   cp "${HOST_CLIPPY_DIR}/config.json" "${DEST_CLIPPY_DIR}/config.json"
   cp "${HOST_CLIPPY_DIR}/token-cache.json" "${DEST_CLIPPY_DIR}/token-cache.json"
 fi
+# Self-heal edge case: if destination files are missing, try one more copy from source.
+for file in "config.json" "token-cache.json"; do
+  if [[ ! -f "${DEST_CLIPPY_DIR}/${file}" && -f "${HOST_CLIPPY_DIR}/${file}" ]]; then
+    cp "${HOST_CLIPPY_DIR}/${file}" "${DEST_CLIPPY_DIR}/${file}"
+  fi
+done
 for file in "config.json" "token-cache.json"; do
   if [[ ! -r "${DEST_CLIPPY_DIR}/${file}" ]]; then
     echo "Error: destination file missing/unreadable '${DEST_CLIPPY_DIR}/${file}'." >&2

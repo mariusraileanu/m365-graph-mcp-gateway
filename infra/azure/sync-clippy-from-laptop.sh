@@ -77,6 +77,8 @@ fi
 echo "[4/4] Securing files and syncing into container..."
 ssh -o StrictHostKeyChecking=accept-new "$REMOTE" "bash -lc '
   set -euo pipefail
+  test -f \"${REMOTE_DIR}/config.json\"
+  test -f \"${REMOTE_DIR}/token-cache.json\"
   cd \"${REMOTE_REPO}\"
   chmod 600 \"${REMOTE_DIR}\"/*.json 2>/dev/null || true
   chown ${USER_NAME}:${USER_NAME} \"${REMOTE_DIR}\"/*.json 2>/dev/null || true
@@ -85,4 +87,3 @@ ssh -o StrictHostKeyChecking=accept-new "$REMOTE" "bash -lc '
 
 echo "Done. Verify with:"
 echo "  ssh ${REMOTE} 'docker exec ${CONTAINER_NAME} clippy whoami'"
-
