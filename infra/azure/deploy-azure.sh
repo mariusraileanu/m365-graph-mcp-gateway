@@ -156,6 +156,73 @@ git rev-parse --short HEAD
   echo "Update complete."
 }
 
+ensure_ssh_inbound_rules() {
+  local nic_name nic_nsg_id subnet_id subnet_nsg_id
+
+  nic_name="$(az vm show \
+    --resource-group "$RESOURCE_GROUP" \
+    --name "$VM_NAME" \
+    --query "networkProfile.networkInterfaces[0].id" -o tsv | awk -F/ '{print $NF}')"
+
+  if [[ -z "$nic_name" ]]; then
+    echo "Warning: unable to resolve NIC name for VM '$VM_NAME'; skipping SSH NSG ensure." >&2
+    return 0
+  fi
+
+  nic_nsg_id="$(az network nic show \
+    --resource-group "$RESOURCE_GROUP" \
+    --name "$nic_name" \
+    --query "networkSecurityGroup.id" -o tsv || true)"
+
+  subnet_id="$(az network nic show \
+    --resource-group "$RESOURCE_GROUP" \
+    --name "$nic_name" \
+    --query "ipConfigurations[0].subnet.id" -o tsv || true)"
+
+  subnet_nsg_id=""
+  if [[ -n "$subnet_id" ]]; then
+    subnet_nsg_id="$(az resource show --ids "$subnet_id" --query "properties.networkSecurityGroup.id" -o tsv || true)"
+  fi
+
+  ensure_ssh_rule_for_nsg() {
+    local nsg_id="$1"
+    local rule_name="$2"
+    local nsg_name
+    local has_ssh_allow
+
+    [[ -n "$nsg_id" ]] || return 0
+    nsg_name="$(awk -F/ '{print $NF}' <<<"$nsg_id")"
+
+    has_ssh_allow="$(az network nsg rule list \
+      --resource-group "$RESOURCE_GROUP" \
+      --nsg-name "$nsg_name" \
+      --query "[?direction=='Inbound' && access=='Allow' && (protocol=='Tcp' || protocol=='*' || protocol=='All') && (destinationPortRange=='22' || destinationPortRange=='22-22' || contains(destinationPortRanges, '22') || contains(destinationPortRanges, '22-22'))] | length(@)" -o tsv || echo "0")"
+
+    if [[ "$has_ssh_allow" != "0" ]]; then
+      echo "SSH allow rule already present on NSG: ${nsg_name}"
+      return 0
+    fi
+
+    echo "Adding SSH allow rule on NSG: ${nsg_name}"
+    az network nsg rule create \
+      --resource-group "$RESOURCE_GROUP" \
+      --nsg-name "$nsg_name" \
+      --name "$rule_name" \
+      --priority 3001 \
+      --access Allow \
+      --direction Inbound \
+      --protocol Tcp \
+      --source-address-prefixes Internet \
+      --source-port-ranges "*" \
+      --destination-address-prefixes "*" \
+      --destination-port-ranges 22 \
+      --output none
+  }
+
+  ensure_ssh_rule_for_nsg "$nic_nsg_id" "openclaw-allow-ssh-nic"
+  ensure_ssh_rule_for_nsg "$subnet_nsg_id" "openclaw-allow-ssh-subnet"
+}
+
 CLOUD_INIT_TEMPLATE="infra/azure/cloud-init.yaml"
 if [[ ! -f "$CLOUD_INIT_TEMPLATE" ]]; then
   echo "Error: missing $CLOUD_INIT_TEMPLATE" >&2
@@ -216,12 +283,7 @@ if [[ "$DEPLOY_MODE" == "update" ]]; then
 
   if [[ "$PRIVATE_MODE" == "0" ]]; then
     echo "Ensuring inbound NSG allows SSH (port 22)..."
-    az vm open-port \
-      --resource-group "$RESOURCE_GROUP" \
-      --name "$VM_NAME" \
-      --port 22 \
-      --priority 1001 \
-      --output none || true
+    ensure_ssh_inbound_rules
     PUBLIC_IP="$(az vm show -d -g "$RESOURCE_GROUP" -n "$VM_NAME" --query publicIps -o tsv)"
   fi
 
@@ -324,12 +386,7 @@ else
     --output none
 
   echo "Restricting inbound NSG to SSH only"
-  az vm open-port \
-    --resource-group "$RESOURCE_GROUP" \
-    --name "$VM_NAME" \
-    --port 22 \
-    --priority 1001 \
-    --output none || true
+  ensure_ssh_inbound_rules
 
   PUBLIC_IP="$(az vm show -d -g "$RESOURCE_GROUP" -n "$VM_NAME" --query publicIps -o tsv)"
   echo "VM public IP: $PUBLIC_IP"
