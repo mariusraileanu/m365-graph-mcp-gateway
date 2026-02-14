@@ -11,6 +11,11 @@ if [[ -f "$dst" ]]; then
   exit 0
 fi
 
+if [[ -d "$dst" ]]; then
+  echo "Found directory at config path, replacing with file: $dst"
+  rm -rf "$dst"
+fi
+
 if [[ ! -f "$src" ]]; then
   if [[ "$src" == "./openclaw.json" && -f "$fallback_example" ]]; then
     src="$fallback_example"

@@ -42,14 +42,6 @@ for provider_name, provider_cfg in providers.items():
     if api_key is not None and not is_placeholder(api_key):
         errors.append(f"models.providers.{provider_name}.apiKey")
 
-gateway = obj.get("gateway") or {}
-auth_token = (gateway.get("auth") or {}).get("token")
-remote_token = (gateway.get("remote") or {}).get("token")
-if auth_token is not None and not is_placeholder(auth_token):
-    errors.append("gateway.auth.token")
-if remote_token is not None and not is_placeholder(remote_token):
-    errors.append("gateway.remote.token")
-
 if errors:
     print("Config contains plaintext secrets in:", file=sys.stderr)
     for e in errors:

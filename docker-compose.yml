@@ -10,7 +10,6 @@ services:
       - "127.0.0.1:18789:18789"
     volumes:
       - ./data/.openclaw:/home/node/.openclaw:rw
-      - ./data/.openclaw/openclaw.json:/home/node/.openclaw/openclaw.json:ro
       - ./data/workspace:/home/node/workspace:rw
       - ./data/clippy:/home/node/.config/clippy:rw
       - ./data/whoop:/home/node/.clawdbot/whoop:rw

@@ -40,13 +40,6 @@ for provider_name, provider_cfg in providers.items():
         errors.append(f"models.providers.{provider_name}.apiKey must use an env placeholder (found plaintext)")
 
 gateway = obj.get("gateway") or {}
-auth_token = (gateway.get("auth") or {}).get("token")
-remote_token = (gateway.get("remote") or {}).get("token")
-if auth_token is not None and not is_placeholder(auth_token):
-    errors.append("gateway.auth.token must use an env placeholder (found plaintext)")
-if remote_token is not None and not is_placeholder(remote_token):
-    errors.append("gateway.remote.token must use an env placeholder (found plaintext)")
-
 if errors:
     print("Config secret validation failed:", file=sys.stderr)
     for e in errors:
@@ -55,10 +48,44 @@ if errors:
 PY
 }
 
+sync_gateway_runtime_config() {
+  local cfg_path="./data/.openclaw/openclaw.json"
+  local gateway_token="$1"
+  if [[ ! -f "$cfg_path" ]]; then
+    echo "Error: missing runtime config: $cfg_path" >&2
+    exit 1
+  fi
+
+  python3 - "$cfg_path" "$gateway_token" <<'PY'
+import json
+import sys
+
+cfg_path = sys.argv[1]
+token = sys.argv[2]
+
+with open(cfg_path, "r", encoding="utf-8") as f:
+    obj = json.load(f)
+
+gateway = obj.setdefault("gateway", {})
+gateway.setdefault("mode", "local")
+gateway.setdefault("bind", "loopback")
+auth = gateway.setdefault("auth", {})
+auth["mode"] = "token"
+auth["token"] = token
+remote = gateway.setdefault("remote", {})
+remote["token"] = token
+
+with open(cfg_path, "w", encoding="utf-8") as f:
+    json.dump(obj, f, indent=2)
+    f.write("\n")
+PY
+  chmod 600 "$cfg_path" || true
+}
+
 ENV_FILE="${4:-.env}"
 "${SCRIPTS_DIR}/check/validate-env.sh" "$ENV_FILE"
 
-mkdir -p ./data/.openclaw/workspace-cron ./data/.openclaw/agents/cron/agent
+mkdir -p ./data/.openclaw/workspace-cron ./data/.openclaw/agents/cron/agent ./data/.openclaw/agents/main/sessions
 "${SCRIPTS_DIR}/cron/sync-workspace.sh" "./data/.openclaw/workspace-cron"
 
 OPENCLAW_PROFILE="${OPENCLAW_PROFILE:-secure}"
@@ -79,6 +106,7 @@ if [[ -z "$gateway_token" ]]; then
 fi
 
 validate_runtime_secrets
+sync_gateway_runtime_config "$gateway_token"
 
 if [[ "$OPENCLAW_PROFILE" == "local-dev" ]]; then
   if [[ -f "./data/.openclaw/openclaw.local-dev.json" ]]; then
