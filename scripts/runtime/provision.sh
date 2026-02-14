@@ -97,6 +97,7 @@ fi
 OPENCLAW_HEALTH_TIMEOUT_SEC="${OPENCLAW_HEALTH_TIMEOUT_SEC:-90}"
 OPENCLAW_SKIP_AUTH_CHECKS="${OPENCLAW_SKIP_AUTH_CHECKS:-}"
 OPENCLAW_CITY="${OPENCLAW_CITY:-Abu Dhabi}"
+OPENCLAW_REQUIRE_CLIPPY_SYNC="${OPENCLAW_REQUIRE_CLIPPY_SYNC:-0}"
 "${SCRIPTS_DIR}/check/validate-secure-profile.sh"
 
 should_skip_check() {
@@ -155,13 +156,23 @@ wait_for_healthy() {
   exit 1
 }
 
-echo "[1/15] Backing up runtime state..."
+echo "[1/17] Backing up runtime state..."
 "${SCRIPTS_DIR}/runtime/backup-state.sh" "./data/.openclaw/backups"
 
-echo "[2/15] Syncing Clippy auth files..."
-"${SCRIPTS_DIR}/auth/sync-clippy.sh" "$CONTAINER_NAME" "${2:-${CLIPPY_HOST_PROFILE_DIR:-}}" "${3:-./data/clippy}"
+echo "[2/17] Syncing Clippy auth files..."
+clippy_source_dir="${2:-${CLIPPY_HOST_PROFILE_DIR:-./data/clippy}}"
+clippy_sync_ok=1
+if ! "${SCRIPTS_DIR}/auth/sync-clippy.sh" "$CONTAINER_NAME" "$clippy_source_dir" "${3:-./data/clippy}"; then
+  clippy_sync_ok=0
+  if [[ "$OPENCLAW_REQUIRE_CLIPPY_SYNC" == "1" ]]; then
+    echo "Error: Clippy sync failed and OPENCLAW_REQUIRE_CLIPPY_SYNC=1." >&2
+    exit 1
+  fi
+  echo "Warning: Clippy sync failed; continuing without Clippy auth." >&2
+  echo "Hint: use infra/azure/sync-clippy-from-laptop.sh --host <vm-ip> from your laptop." >&2
+fi
 
-echo "[3/15] Syncing WHOOP auth files from .env..."
+echo "[3/17] Syncing WHOOP auth files from .env..."
 "${SCRIPTS_DIR}/auth/sync-whoop.sh" "${4:-.env}" "${5:-./data/whoop}" "$CONTAINER_NAME"
 
 echo "[4/17] Syncing Weather skill..."
@@ -201,7 +212,11 @@ wait_for_healthy "$CONTAINER_NAME" "$OPENCLAW_HEALTH_TIMEOUT_SEC"
 "${SCRIPTS_DIR}/runtime/harden-state-permissions.sh" "$CONTAINER_NAME"
 
 echo "[15/17] Quick auth checks..."
-run_auth_check "clippy" "Clippy auth" "clippy whoami"
+if [[ "$clippy_sync_ok" == "1" ]]; then
+  run_auth_check "clippy" "Clippy auth" "clippy whoami"
+else
+  echo "Skipped Clippy auth check (sync failed earlier)."
+fi
 run_auth_check "whoop" "WHOOP auth refresh" "/home/node/.openclaw/skills/whoop-central/scripts/whoop-central verify --refresh"
 docker exec "$CONTAINER_NAME" sh -lc "/home/node/.openclaw/skills/weather/scripts/weather '${OPENCLAW_CITY}'" || true
 docker exec "$CONTAINER_NAME" sh -lc "test -f /home/node/.openclaw/skills/tavily-search/SKILL.md && tavily-search --help >/dev/null && echo 'tavily-search installed'" || true

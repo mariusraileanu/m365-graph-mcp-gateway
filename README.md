@@ -237,6 +237,10 @@ Auth failures:
 bin/openclawctl auth-clippy
 bin/openclawctl auth-whoop
 ```
+Provision behavior:
+- Clippy sync defaults to `./data/clippy` as source on servers.
+- If Clippy files are missing, provision continues by default (warning only).
+- To require Clippy sync strictly, set `OPENCLAW_REQUIRE_CLIPPY_SYNC=1`.
 
 Check installed skills in runtime state:
 ```bash
