@@ -184,10 +184,10 @@ wait_for_healthy() {
   exit 1
 }
 
-echo "[1/17] Backing up runtime state..."
+echo "[1/18] Backing up runtime state..."
 "${SCRIPTS_DIR}/runtime/backup-state.sh" "./data/.openclaw/backups"
 
-echo "[2/17] Syncing Clippy auth files..."
+echo "[2/18] Syncing Clippy auth files..."
 clippy_source_dir="${2:-${CLIPPY_HOST_PROFILE_DIR:-./data/clippy}}"
 clippy_sync_ok=1
 if ! "${SCRIPTS_DIR}/auth/sync-clippy.sh" "$CONTAINER_NAME" "$clippy_source_dir" "${3:-./data/clippy}"; then
@@ -200,46 +200,49 @@ if ! "${SCRIPTS_DIR}/auth/sync-clippy.sh" "$CONTAINER_NAME" "$clippy_source_dir"
   echo "Hint: use infra/azure/sync-clippy-from-laptop.sh --host <vm-ip> from your laptop." >&2
 fi
 
-echo "[3/17] Syncing WHOOP auth files from .env..."
+echo "[3/18] Syncing WHOOP auth files from .env..."
 "${SCRIPTS_DIR}/auth/sync-whoop.sh" "${4:-.env}" "${5:-./data/whoop}" "$CONTAINER_NAME"
 
-echo "[4/17] Syncing Weather skill..."
+echo "[4/18] Syncing Weather skill..."
 "${SCRIPTS_DIR}/skills/sync-weather.sh" "${6:-./data/.openclaw/skills/weather}" "${7:-./data/.openclaw/skills/weather/scripts/weather}"
 
-echo "[5/17] Syncing Tavily skill..."
+echo "[5/18] Syncing Clippy skill..."
+"${SCRIPTS_DIR}/skills/sync-clippy.sh" "./data/.openclaw" "skills" "clippy"
+
+echo "[6/18] Syncing Tavily skill..."
 "${SCRIPTS_DIR}/skills/sync-tavily.sh" "./data/.openclaw" "skills" "tavily-search"
 
-echo "[6/17] Syncing WHOOP Central skill..."
+echo "[7/18] Syncing WHOOP Central skill..."
 "${SCRIPTS_DIR}/skills/sync-whoop-central.sh" "./data/.openclaw" "skills" "whoop-central"
 
-echo "[7/17] Syncing Self-Improving skill..."
+echo "[8/18] Syncing Self-Improving skill..."
 "${SCRIPTS_DIR}/skills/sync-self-improving.sh" "${8:-./data/.openclaw}" "${9:-skills}" "${10:-self-improving-agent}" "${11:-./data/workspace}"
 
-echo "[8/17] Syncing goplaces skill..."
+echo "[9/18] Syncing goplaces skill..."
 "${SCRIPTS_DIR}/skills/sync-goplaces.sh" "${12:-./data/.openclaw}" "${13:-skills}" "${14:-goplaces}" "${4:-.env}"
 
-echo "[9/17] Syncing playwright-mcp skill..."
+echo "[10/18] Syncing playwright-mcp skill..."
 "${SCRIPTS_DIR}/skills/sync-playwright-mcp.sh" "${12:-./data/.openclaw}" "${13:-skills}" "${15:-playwright-mcp}"
 
-echo "[10/17] Syncing cron workspace personalization..."
+echo "[11/18] Syncing cron workspace personalization..."
 "${SCRIPTS_DIR}/cron/sync-workspace.sh" "./data/.openclaw/workspace-cron"
 
-echo "[11/17] Syncing cron tooling wrappers..."
+echo "[12/18] Syncing cron tooling wrappers..."
 "${SCRIPTS_DIR}/cron/sync-tooling.sh" "./data/.openclaw/workspace-cron"
 
-echo "[12/17] Syncing morning briefing cron template..."
+echo "[13/18] Syncing morning briefing cron template..."
 "${SCRIPTS_DIR}/cron/sync-morning-brief.sh" "${16:-./data/.openclaw/cron/jobs.json}"
 
-echo "[13/17] Syncing evening reflection cron template..."
+echo "[14/18] Syncing evening reflection cron template..."
 "${SCRIPTS_DIR}/cron/sync-evening-reflection.sh" "${16:-./data/.openclaw/cron/jobs.json}"
 
-echo "[14/17] Recreating container..."
+echo "[15/18] Recreating container..."
 docker compose up -d --force-recreate
 wait_for_healthy "$CONTAINER_NAME" "$OPENCLAW_HEALTH_TIMEOUT_SEC"
 "${SCRIPTS_DIR}/runtime/fix-browser-profile-lock.sh" "$CONTAINER_NAME"
 "${SCRIPTS_DIR}/runtime/harden-state-permissions.sh" "$CONTAINER_NAME"
 
-echo "[15/17] Quick auth checks..."
+echo "[16/18] Quick auth checks..."
 if [[ "$clippy_sync_ok" == "1" ]]; then
   run_auth_check "clippy" "Clippy auth" "clippy whoami"
 else
@@ -253,10 +256,10 @@ docker exec "$CONTAINER_NAME" sh -lc "test -f /home/node/.openclaw/skills/self-i
 docker exec "$CONTAINER_NAME" sh -lc "test -f /home/node/.openclaw/skills/goplaces/SKILL.md && goplaces --help >/dev/null && echo 'goplaces installed'" || true
 docker exec "$CONTAINER_NAME" sh -lc "test -f /home/node/.openclaw/skills/playwright-mcp/SKILL.md && playwright-mcp --version >/dev/null && echo 'playwright-mcp installed'" || true
 
-echo "[16/17] Writing runtime diagnostics snapshot..."
+echo "[17/18] Writing runtime diagnostics snapshot..."
 "${SCRIPTS_DIR}/runtime/collect-diagnostics.sh" "$CONTAINER_NAME"
 
-echo "[17/17] Runtime smoke checks..."
+echo "[18/18] Runtime smoke checks..."
 SKIP_CHECKS="$OPENCLAW_SKIP_AUTH_CHECKS" "${SCRIPTS_DIR}/check/test-runtime.sh" "$CONTAINER_NAME"
 
 echo "Done."
