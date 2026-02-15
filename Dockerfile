@@ -2,19 +2,21 @@
 # =============================================================================
 # OpenClaw Docker Image - Multi-stage build
 # =============================================================================
-# Versions sourced from config/versions.env
-# Usage: docker build -t openclaw .
 
 # =============================================================================
 # Stage 1: Builder - compile dependencies
 # =============================================================================
 FROM node:22-bookworm AS builder
 
-ARG ENV_FILE=./config/versions.env
-RUN test -f "$ENV_FILE" || (echo "ERROR: $ENV_FILE not found. Run: cp config/versions.env_example config/versions.env" && exit 1)
-# shellcheck source=/dev/null
-RUN . "$ENV_FILE" && \
-    echo "Building: OPENCLAW_REF=$OPENCLAW_REF, CLIPPY_REF=$CLIPPY_REF"
+# Hardcoded versions (update here when changing versions)
+ENV OPENCLAW_REF=dd6047d998b0a3b11f6ed34b3e99d47ca9dd92a0
+ENV CLIPPY_REF=8e673e87598594ade431cac818cc00b2ac35b9cc
+ENV TAVILY_MCP_VERSION=0.2.17
+ENV PLAYWRIGHT_MCP_VERSION=0.0.64
+ENV CLAWHUB_VERSION=0.6.1
+ENV PNPM_VERSION=10.23.0
+
+RUN echo "Building: OPENCLAW_REF=$OPENCLAW_REF, CLIPPY_REF=$CLIPPY_REF"
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates chromium curl git python3 && rm -rf /var/lib/apt/lists/*
@@ -49,18 +51,14 @@ RUN mkdir -p /home/node/.openclaw/skills \
 # =============================================================================
 FROM node:22-bookworm-slim AS runtime
 
-ARG ENV_FILE=./config/versions.env
-# shellcheck source=/dev/null
-RUN . "$ENV_FILE"
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates chromium curl python3 && rm -rf /var/lib/apt/lists/*
-
 ENV DEBIAN_FRONTEND=noninteractive \
     NODE_ENV=production \
     BUN_INSTALL=/opt/bun \
     PNPM_HOME=/opt/pnpm \
     PATH=/opt/pnpm:/opt/bun/bin:${PATH}
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates chromium curl python3 && rm -rf /var/lib/apt/lists/*
 
 RUN corepack enable && corepack prepare "pnpm@${PNPM_VERSION}" --activate
 RUN curl -fsSL https://bun.sh/install | bash
