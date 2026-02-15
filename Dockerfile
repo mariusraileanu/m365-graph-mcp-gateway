@@ -10,8 +10,8 @@
 # =============================================================================
 FROM node:22-bookworm AS builder
 
-ARG ENV_FILE=../config/versions.env
-RUN test -f "$ENV_FILE" || (echo "ERROR: $ENV_FILE not found" && exit 1)
+ARG ENV_FILE=./config/versions.env
+RUN test -f "$ENV_FILE" || (echo "ERROR: $ENV_FILE not found. Run: cp config/versions.env_example config/versions.env" && exit 1)
 # shellcheck source=/dev/null
 RUN . "$ENV_FILE" && \
     echo "Building: OPENCLAW_REF=$OPENCLAW_REF, CLIPPY_REF=$CLIPPY_REF"
@@ -49,7 +49,7 @@ RUN mkdir -p /home/node/.openclaw/skills \
 # =============================================================================
 FROM node:22-bookworm-slim AS runtime
 
-ARG ENV_FILE=../config/versions.env
+ARG ENV_FILE=./config/versions.env
 # shellcheck source=/dev/null
 RUN . "$ENV_FILE"
 

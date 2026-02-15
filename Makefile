@@ -22,6 +22,10 @@ help:
 	@echo "make deploy        Deploy to Azure VM (1-click)"
 
 build:
+	@if [ ! -f config/versions.env ]; then \
+		echo "Creating config/versions.env from example..."; \
+		cp config/versions.env_example config/versions.env || echo "ERROR: versions.env not found"; \
+	fi
 	docker compose build
 
 up:
