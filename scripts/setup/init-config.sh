@@ -1,9 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-src="${1:-./openclaw.json}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+src="${1:-}"
 dst="${2:-./data/.openclaw/openclaw.json}"
-fallback_example="./openclaw.json.example"
+
+if [[ -z "$src" ]]; then
+  src="${ROOT_DIR}/config/openclaw.json.example"
+fi
+
 fallback_existing="./data/.openclaw/openclaw.json"
 
 if [[ -f "$dst" ]]; then
@@ -17,16 +24,13 @@ if [[ -d "$dst" ]]; then
 fi
 
 if [[ ! -f "$src" ]]; then
-  if [[ "$src" == "./openclaw.json" && -f "$fallback_example" ]]; then
-    src="$fallback_example"
-    echo "Template ./openclaw.json not found, using: $src"
-  elif [[ "$src" == "./openclaw.json" && -f "$fallback_existing" ]]; then
+  if [[ -f "$fallback_existing" ]]; then
     src="$fallback_existing"
-    echo "Template ./openclaw.json not found, using existing runtime config: $src"
+    echo "Template not found, using existing runtime config: $src"
   else
     echo "Missing template: $src" >&2
     echo "Pass a template path explicitly, e.g.:" >&2
-    echo "  ./scripts/init-config.sh ./openclaw.json.example" >&2
+    echo "  bin/openclawctl init ./config/openclaw.json.example" >&2
     exit 1
   fi
 fi

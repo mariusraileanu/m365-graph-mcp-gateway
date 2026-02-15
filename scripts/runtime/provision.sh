@@ -98,7 +98,7 @@ PY
   chmod 600 "$cfg_path" || true
 }
 
-ENV_FILE="${4:-.env}"
+ENV_FILE="${1:-.env}"
 
 if [[ -f "$ENV_FILE" ]]; then
   while IFS='=' read -r key raw || [[ -n "${key:-}" ]]; do
@@ -120,11 +120,11 @@ fi
 "${SCRIPTS_DIR}/check/validate-env.sh" "$ENV_FILE"
 
 mkdir -p ./data/.openclaw/workspace-cron ./data/.openclaw/agents/cron/agent ./data/.openclaw/agents/main/sessions
-"${SCRIPTS_DIR}/workspace/sync-workspace.sh" "./data/workspace"
-"${SCRIPTS_DIR}/cron/sync-workspace.sh" "./data/.openclaw/workspace-cron"
+"${SCRIPTS_DIR}/cron/sync-workspace.sh" --type main ./data/workspace
+"${SCRIPTS_DIR}/cron/sync-workspace.sh" --type cron
 
 OPENCLAW_PROFILE="${OPENCLAW_PROFILE:-secure}"
-CONTAINER_NAME="${1:-openclaw}"
+CONTAINER_NAME="${2:-openclaw}"
 gateway_token="${OPENCLAW_GATEWAY_AUTH_TOKEN:-}"
 if [[ -z "$gateway_token" && -f "$ENV_FILE" ]]; then
   gateway_token="$(grep -m1 '^OPENCLAW_GATEWAY_AUTH_TOKEN=' "$ENV_FILE" | cut -d= -f2- || true)"
@@ -136,7 +136,7 @@ fi
 
 if [[ -z "$gateway_token" ]]; then
   echo "Error: OPENCLAW_GATEWAY_AUTH_TOKEN is missing or empty." >&2
-  echo "Set it in ${ENV_FILE} (or export it) before recreating." >&2
+  echo "Set it in ${ENV_FILE} (or export it) before provisioning." >&2
   exit 1
 fi
 
@@ -185,7 +185,6 @@ run_auth_check() {
   echo "Checking ${desc}..."
   if ! docker exec "$CONTAINER_NAME" sh -lc "$cmd"; then
     echo "Error: ${desc} failed." >&2
-    echo "To bypass temporarily: OPENCLAW_SKIP_AUTH_CHECKS=${check_name} ./scripts/provision-openclaw.sh" >&2
     exit 1
   fi
 }
@@ -219,82 +218,45 @@ wait_for_healthy() {
   exit 1
 }
 
-echo "[1/18] Backing up runtime state..."
+echo "[1/8] Backing up runtime state..."
 "${SCRIPTS_DIR}/runtime/backup-state.sh" "./data/.openclaw/backups"
 
-echo "[2/18] Syncing Clippy auth files..."
-clippy_source_dir="${2:-${CLIPPY_HOST_PROFILE_DIR:-./data/clippy}}"
+echo "[2/8] Syncing Clippy auth files..."
+clippy_source_dir="${CLIPPY_HOST_PROFILE_DIR:-./data/clippy}"
 clippy_sync_ok=1
-if ! "${SCRIPTS_DIR}/auth/sync-clippy.sh" "$CONTAINER_NAME" "$clippy_source_dir" "${3:-./data/clippy}"; then
+if ! "${SCRIPTS_DIR}/auth/sync-clippy.sh" "$CONTAINER_NAME" "$clippy_source_dir" "./data/clippy"; then
   clippy_sync_ok=0
   if [[ "$OPENCLAW_REQUIRE_CLIPPY_SYNC" == "1" ]]; then
     echo "Error: Clippy sync failed and OPENCLAW_REQUIRE_CLIPPY_SYNC=1." >&2
     exit 1
   fi
-  echo "Warning: Clippy sync failed; continuing without Clippy auth." >&2
-  echo "Hint: use infra/azure/sync-clippy-from-laptop.sh --host <vm-ip> from your laptop." >&2
+  echo "Warning: Clippy sync failed; continuing without Clippy auth."
 fi
 
-echo "[3/18] Syncing WHOOP auth files from .env..."
-"${SCRIPTS_DIR}/auth/sync-whoop.sh" "${4:-.env}" "${5:-./data/whoop}" "$CONTAINER_NAME"
+echo "[3/8] Syncing WHOOP auth from .env..."
+"${SCRIPTS_DIR}/auth/sync-whoop.sh" "$ENV_FILE" "./data/whoop" "$CONTAINER_NAME"
 
-echo "[4/18] Syncing Weather skill..."
-"${SCRIPTS_DIR}/skills/sync-weather.sh" "${6:-./data/.openclaw/skills/weather}" "${7:-./data/.openclaw/skills/weather/scripts/weather}"
+echo "[4/8] Syncing cron workspace..."
+"${SCRIPTS_DIR}/cron/sync-workspace.sh" --type cron
 
-echo "[5/18] Syncing Clippy skill..."
-"${SCRIPTS_DIR}/skills/sync-clippy.sh" "./data/.openclaw" "skills" "clippy"
-
-echo "[6/18] Syncing Tavily skill..."
-"${SCRIPTS_DIR}/skills/sync-tavily.sh" "./data/.openclaw" "skills" "tavily-search"
-
-echo "[7/18] Syncing WHOOP Central skill..."
-"${SCRIPTS_DIR}/skills/sync-whoop-central.sh" "./data/.openclaw" "skills" "whoop-central"
-
-echo "[8/18] Syncing Self-Improving skill..."
-"${SCRIPTS_DIR}/skills/sync-self-improving.sh" "${8:-./data/.openclaw}" "${9:-skills}" "${10:-self-improving-agent}" "${11:-./data/workspace}"
-
-echo "[9/18] Syncing goplaces skill..."
-"${SCRIPTS_DIR}/skills/sync-goplaces.sh" "${12:-./data/.openclaw}" "${13:-skills}" "${14:-goplaces}" "${4:-.env}"
-
-echo "[10/18] Syncing playwright-mcp skill..."
-"${SCRIPTS_DIR}/skills/sync-playwright-mcp.sh" "${12:-./data/.openclaw}" "${13:-skills}" "${15:-playwright-mcp}"
-
-echo "[11/18] Syncing cron workspace personalization..."
-"${SCRIPTS_DIR}/cron/sync-workspace.sh" "./data/.openclaw/workspace-cron"
-
-echo "[12/18] Syncing cron tooling wrappers..."
+echo "[5/8] Syncing cron tooling..."
 "${SCRIPTS_DIR}/cron/sync-tooling.sh" "./data/.openclaw/workspace-cron"
 
-echo "[13/18] Syncing morning briefing cron template..."
-"${SCRIPTS_DIR}/cron/sync-morning-brief.sh" "${16:-./data/.openclaw/cron/jobs.json}"
-
-echo "[14/18] Syncing evening reflection cron template..."
-"${SCRIPTS_DIR}/cron/sync-evening-reflection.sh" "${16:-./data/.openclaw/cron/jobs.json}"
-
-echo "[15/18] Recreating container..."
+echo "[6/8] Recreating container..."
 docker compose up -d --force-recreate
 wait_for_healthy "$CONTAINER_NAME" "$OPENCLAW_HEALTH_TIMEOUT_SEC"
-"${SCRIPTS_DIR}/runtime/fix-browser-profile-lock.sh" "$CONTAINER_NAME"
-"${SCRIPTS_DIR}/runtime/harden-state-permissions.sh" "$CONTAINER_NAME"
+"${SCRIPTS_DIR}/runtime/harden-state-permissions.sh" "$CONTAINER_NAME" 2>/dev/null || true
 
-echo "[16/18] Quick auth checks..."
+echo "[7/8] Quick auth checks..."
 if [[ "$clippy_sync_ok" == "1" ]]; then
   run_auth_check "clippy" "Clippy auth" "clippy whoami"
 else
-  echo "Skipped Clippy auth check (sync failed earlier)."
+  echo "Skipped Clippy auth check (sync failed)."
 fi
-run_auth_check "whoop" "WHOOP auth refresh" "if command -v whoop-central >/dev/null 2>&1; then whoop-central verify --refresh; elif [ -x /home/node/.openclaw/skills/whoop-central/scripts/whoop-central ]; then /home/node/.openclaw/skills/whoop-central/scripts/whoop-central verify --refresh; else echo 'whoop-central command not found' >&2; exit 1; fi"
-docker exec "$CONTAINER_NAME" sh -lc "/home/node/.openclaw/skills/weather/scripts/weather '${OPENCLAW_CITY}'" || true
-docker exec "$CONTAINER_NAME" sh -lc "test -f /home/node/.openclaw/skills/tavily-search/SKILL.md && tavily-search --help >/dev/null && echo 'tavily-search installed'" || true
-docker exec "$CONTAINER_NAME" sh -lc "test -f /home/node/.openclaw/skills/whoop-central/SKILL.md && echo 'whoop-central installed'" || true
-docker exec "$CONTAINER_NAME" sh -lc "test -f /home/node/.openclaw/skills/self-improving-agent/SKILL.md && echo 'self-improving-agent installed'" || true
-docker exec "$CONTAINER_NAME" sh -lc "test -f /home/node/.openclaw/skills/goplaces/SKILL.md && goplaces --help >/dev/null && echo 'goplaces installed'" || true
-docker exec "$CONTAINER_NAME" sh -lc "test -f /home/node/.openclaw/skills/playwright-mcp/SKILL.md && playwright-mcp --version >/dev/null && echo 'playwright-mcp installed'" || true
+run_auth_check "whoop" "WHOOP auth" "whoop-central verify --refresh"
+docker exec "$CONTAINER_NAME" sh -lc "weather '${OPENCLAW_CITY}'" || true
 
-echo "[17/18] Writing runtime diagnostics snapshot..."
-"${SCRIPTS_DIR}/runtime/collect-diagnostics.sh" "$CONTAINER_NAME"
-
-echo "[18/18] Runtime smoke checks..."
+echo "[8/8] Runtime smoke checks..."
 SKIP_CHECKS="$OPENCLAW_SKIP_AUTH_CHECKS" "${SCRIPTS_DIR}/check/test-runtime.sh" "$CONTAINER_NAME"
 
-echo "Done."
+echo "Done. Provision complete."

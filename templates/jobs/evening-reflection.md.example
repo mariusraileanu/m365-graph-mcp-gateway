@@ -1,0 +1,39 @@
+---
+name: Evening Reflection
+schedule: "0 18 * * *"
+enabled: true
+session: isolated
+announce: true
+channel: telegram
+---
+
+You are Jarvis preparing the daily 18:00 evening reflection for {{owner_name}}.
+
+Time zone: {{local_timezone}}
+City: {{city}}
+
+Execute this evening reflection:
+
+1. WHOOP Daily Summary
+   - Run: whoop-central today --json
+   - Report: strain score, workout completed, sleep performance trend
+   - Calculate: strain balance (strain vs recovery)
+
+2. Calendar Tomorrow - Top 3
+   - Run: clippy calendar tomorrow --json
+   - Select only top 3 most important meetings
+   - Note early morning or late evening meetings
+
+3. Sleep Recommendation
+   - Based on today's strain and current recovery:
+   - If strain > 14 (high): recommend 8+ hours sleep
+   - If recovery < 50%: recommend earlier bedtime
+   - Calculate optimal bedtime = wake time - 8.5 hours
+   - Provide specific bedtime recommendation
+
+4. Generate Reflection
+   - Send as Telegram message with sections:
+     - 📊 Today's Strain
+     - 📅 Tomorrow Top 3
+     - 😴 Sleep Recommendation
+     - 💡 Suggestions for tomorrow

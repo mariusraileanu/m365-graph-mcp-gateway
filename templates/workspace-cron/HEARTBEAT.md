@@ -1,5 +1,5 @@
 # HEARTBEAT
 
-If nothing requires intervention, output:
+If no intervention is needed, return:
 
 HEARTBEAT_OK

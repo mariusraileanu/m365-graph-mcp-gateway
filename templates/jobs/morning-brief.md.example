@@ -1,0 +1,43 @@
+---
+name: Morning Brief
+schedule: "0 8 * * *"
+enabled: true
+session: isolated
+announce: true
+channel: telegram
+---
+
+You are Jarvis preparing the daily 08:00 briefing for {{owner_name}}.
+
+Time zone: {{local_timezone}}
+City: {{city}}
+
+Execute this morning brief:
+
+1. WHOOP Recovery
+   - Run: whoop-central today --json
+   - Report: recovery score, strain, sleep performance, sleep hours
+   - If recovery < 50%: flag as "tired day"
+
+2. Calendar Today
+   - Run: clippy calendar today --json
+   - List meetings with times
+   - Note conflicts or tight back-to-back (>3 meetings in a row)
+
+3. Email - Urgent Only
+   - Run: clippy email unread --json
+   - Flag emails from VIP senders or urgent subjects
+
+4. AI News
+   - Run: tavily-search --query "latest AI news" --max-results 3
+   - Summarize top 3 stories
+
+5. Generate Briefing
+   - If WHOOP recovery < 50% AND calendar has >4 meetings:
+     - Propose specific meetings to reschedule
+   - Send as Telegram message with sections:
+     - 💪 WHOOP Recovery
+     - 📅 Today
+     - 📧 Urgent Email
+     - 🤖 AI News
+     - ⭐ Top Actions

@@ -1,4 +1,4 @@
-# Memory
+# MEMORY
 
-- Keep only operationally useful run learnings.
-- Never persist secrets.
+Store only run-level learnings that improve future scheduled outputs.
+Never store secrets.

@@ -3,86 +3,111 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
-# shellcheck source=../lib/common.sh
-source "${ROOT_DIR}/scripts/lib/common.sh"
 
-CONTAINER_NAME="${1:-openclaw}"
-HOST_CLIPPY_DIR="${2:-}"
-DEST_CLIPPY_DIR="${3:-./data/clippy}"
-CONTAINER_CLIPPY_DIR="/home/node/.config/clippy"
+usage() {
+  cat <<'EOF'
+Sync Clippy auth files.
 
-if [[ -z "${HOST_CLIPPY_DIR}" ]]; then
-  if [[ -n "${CLIPPY_HOST_PROFILE_DIR:-}" ]]; then
-    HOST_CLIPPY_DIR="${CLIPPY_HOST_PROFILE_DIR}"
-  elif [[ -n "${XDG_CONFIG_HOME:-}" ]]; then
-    HOST_CLIPPY_DIR="${XDG_CONFIG_HOME}/clippy"
-  else
-    HOST_CLIPPY_DIR="${HOME}/.config/clippy"
-  fi
-fi
+Usage:
+  sync-clippy.sh                     # Local: data/clippy -> container
+  sync-clippy.sh --host <vm-ip>     # Remote: laptop -> VM -> container
 
-required_files=(
-  "config.json"
-  "token-cache.json"
-)
+Options:
+  --host <ip>      Remote VM IP (enables SSH-based sync)
+  --user <name>   SSH user (default: azureuser)
+  --source <dir>  Source directory (default: ~/.config/clippy)
+  --dest <dir>    Destination directory (default: ./data/clippy)
 
-for file in "${required_files[@]}"; do
-  if [[ ! -f "${HOST_CLIPPY_DIR}/${file}" ]]; then
-    echo "Error: missing file '${HOST_CLIPPY_DIR}/${file}'." >&2
-    exit 1
-  fi
-  if [[ ! -s "${HOST_CLIPPY_DIR}/${file}" ]]; then
-    echo "Error: empty file '${HOST_CLIPPY_DIR}/${file}'." >&2
-    exit 1
-  fi
+Required source files:
+  - config.json
+  - token-cache.json
+
+Optional source files:
+  - storage-state.json
+EOF
+}
+
+HOST=""
+USER_NAME="azureuser"
+SOURCE_DIR="${HOME}/.config/clippy"
+DEST_DIR="${ROOT_DIR}/data/clippy"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --host) HOST="${2:-}"; shift 2 ;;
+    --user) USER_NAME="${2:-}"; shift 2 ;;
+    --source) SOURCE_DIR="${2:-}"; shift 2 ;;
+    --dest) DEST_DIR="${2:-}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown: $1" >&2; usage >&2; exit 2 ;;
+  esac
 done
 
-ensure_dir_secure "${DEST_CLIPPY_DIR}"
-same_dir="0"
-if [[ "$(cd "${HOST_CLIPPY_DIR}" && pwd)" == "$(cd "${DEST_CLIPPY_DIR}" && pwd)" ]]; then
-  same_dir="1"
+check_source_files() {
+  local dir="$1"
+  for f in config.json token-cache.json; do
+    if [[ ! -f "${dir}/${f}" ]]; then
+      echo "Error: missing ${dir}/${f}" >&2
+      exit 1
+    fi
+    if [[ ! -s "${dir}/${f}" ]]; then
+      echo "Error: empty ${dir}/${f}" >&2
+      exit 1
+    fi
+  done
+}
+
+sync_local() {
+  check_source_files "$SOURCE_DIR"
+
+  mkdir -p "$DEST_DIR"
+  cp "${SOURCE_DIR}/config.json" "${DEST_DIR}/"
+  cp "${SOURCE_DIR}/token-cache.json" "${DEST_DIR}/"
+
+  if [[ -f "${SOURCE_DIR}/storage-state.json" ]]; then
+    cp "${SOURCE_DIR}/storage-state.json" "${DEST_DIR}/"
+    echo "Synced storage-state.json"
+  fi
+
+  chmod 600 "${DEST_DIR}"/*.json 2>/dev/null || true
+  echo "Synced Clippy auth to: ${DEST_DIR}"
+
+  if command -v docker >/dev/null 2>&1 && docker ps --format '{{.Names}}' | grep -qx "openclaw"; then
+    docker exec openclaw sh -lc "mkdir -p '/home/node/.config/clippy' && chmod 700 '/home/node/.config/clippy'"
+    echo "Synced to container"
+  fi
+}
+
+sync_remote() {
+  if [[ -z "$HOST" ]]; then
+    echo "Error: --host required for remote sync" >&2
+    exit 1
+  fi
+
+  check_source_files "$SOURCE_DIR"
+
+  local remote="${USER_NAME}@${HOST}"
+  local remote_dir="${ROOT_DIR}/data/clippy"
+
+  echo "[1/3] Creating remote directory..."
+  ssh -o StrictHostKeyChecking=accept-new "$remote" "mkdir -p '${remote_dir}'"
+
+  echo "[2/3] Copying files..."
+  scp -q "${SOURCE_DIR}/config.json" "${remote}:${remote_dir}/"
+  scp -q "${SOURCE_DIR}/token-cache.json" "${remote}:${remote_dir}/"
+
+  if [[ -f "${SOURCE_DIR}/storage-state.json" ]]; then
+    scp -q "${SOURCE_DIR}/storage-state.json" "${remote}:${remote_dir}/"
+  fi
+
+  echo "[3/3] Securing files..."
+  ssh -o StrictHostKeyChecking=accept-new "$remote" "chmod 600 '${remote_dir}'/*.json 2>/dev/null || true"
+
+  echo "Done. Verify with: ssh ${remote} 'docker exec openclaw clippy whoami'"
+}
+
+if [[ -n "$HOST" ]]; then
+  sync_remote
 else
-  cp "${HOST_CLIPPY_DIR}/config.json" "${DEST_CLIPPY_DIR}/config.json"
-  cp "${HOST_CLIPPY_DIR}/token-cache.json" "${DEST_CLIPPY_DIR}/token-cache.json"
+  sync_local
 fi
-# Self-heal edge case: if destination files are missing, try one more copy from source.
-for file in "config.json" "token-cache.json"; do
-  if [[ ! -f "${DEST_CLIPPY_DIR}/${file}" && -f "${HOST_CLIPPY_DIR}/${file}" ]]; then
-    cp "${HOST_CLIPPY_DIR}/${file}" "${DEST_CLIPPY_DIR}/${file}"
-  fi
-done
-for file in "config.json" "token-cache.json"; do
-  if [[ ! -r "${DEST_CLIPPY_DIR}/${file}" ]]; then
-    echo "Error: destination file missing/unreadable '${DEST_CLIPPY_DIR}/${file}'." >&2
-    exit 1
-  fi
-done
-ensure_file_secure "${DEST_CLIPPY_DIR}/config.json"
-ensure_file_secure "${DEST_CLIPPY_DIR}/token-cache.json"
-
-# Optional but important for long-lived automation:
-# Clippy can reuse saved browser session cookies from storage-state.json
-# when token refresh is no longer valid.
-if [[ -f "${HOST_CLIPPY_DIR}/storage-state.json" ]]; then
-  if [[ "$same_dir" != "1" ]]; then
-    cp "${HOST_CLIPPY_DIR}/storage-state.json" "${DEST_CLIPPY_DIR}/storage-state.json"
-  fi
-  ensure_file_secure "${DEST_CLIPPY_DIR}/storage-state.json"
-  echo "Synced optional browser session file: ${DEST_CLIPPY_DIR}/storage-state.json"
-else
-  echo "Warning: ${HOST_CLIPPY_DIR}/storage-state.json not found."
-  echo "Clippy may require 'clippy login --interactive' when refresh tokens expire."
-fi
-echo "Synced Clippy auth files to host mount: ${DEST_CLIPPY_DIR}"
-
-if command -v docker >/dev/null 2>&1 && container_running "${CONTAINER_NAME}"; then
-  # data/clippy is bind-mounted into the container at CONTAINER_CLIPPY_DIR.
-  # Never remove/copy files from inside the container here; that can delete host files.
-  docker exec "${CONTAINER_NAME}" sh -lc "mkdir -p '${CONTAINER_CLIPPY_DIR}' && chmod 700 '${CONTAINER_CLIPPY_DIR}'"
-  if [[ "$same_dir" == "1" ]]; then
-    echo "Clippy source and destination are the same path; using mounted files directly."
-  fi
-  echo "Synced Clippy auth files to running container: ${CONTAINER_NAME}:${CONTAINER_CLIPPY_DIR}"
-fi
-
-echo "Next check: docker exec ${CONTAINER_NAME} clippy whoami"

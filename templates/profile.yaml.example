@@ -1,0 +1,6 @@
+# User Profile Template
+# Copy to profile.yaml and customize
+
+owner_name: User
+local_timezone: UTC
+city: Your City

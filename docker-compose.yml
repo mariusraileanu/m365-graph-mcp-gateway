@@ -1,6 +1,10 @@
 services:
   openclaw:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        ENV_FILE: ./config/versions.env
     container_name: openclaw
     restart: unless-stopped
     user: "node"

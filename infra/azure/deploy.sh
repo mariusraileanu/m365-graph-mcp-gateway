@@ -1,8 +1,17 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 cd "$ROOT_DIR"
+
+# Source versions
+if [[ -f "${ROOT_DIR}/config/versions.env" ]]; then
+  set -a
+  # shellcheck source=/dev/null
+  source "${ROOT_DIR}/config/versions.env"
+  set +a
+fi
 
 AZURE_ENV_FILE="${AZURE_ENV_FILE:-.env.azure}"
 if [[ -f "$AZURE_ENV_FILE" ]]; then
@@ -17,7 +26,7 @@ usage() {
 One-click-ish Azure VM deployment for OpenClaw.
 
 Usage:
-  infra/azure/deploy-azure.sh \
+  infra/azure/deploy.sh \
     --resource-group <name> \
     --vm-name <name> \
     [--location <azure-location>] \
