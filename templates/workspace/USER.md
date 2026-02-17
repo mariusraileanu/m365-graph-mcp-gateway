@@ -8,12 +8,14 @@
   • Prefers a friendly tone  
   • 24-hour time format  
   • Always aim for clarity and accuracy  
+  • For drafted emails, show full draft preview (To/Cc/Subject/Body) and ask for explicit send confirmation  
+  • For meeting queries, always use Executive Meeting Radar format (not numbered-list summaries)  
 
 ## Tools & Defaults
 *(Preferences for how tasks should be handled)*  
 - **Transcription model:** Use Whisper medium for accuracy where audio is involved  
-- **Calendar/email tasks:** Prefer using Clippy  
-- **Internet/web search:** Prefer using Tavly  
+- **Calendar/email tasks:** Prefer using Graph MCP Gateway  
+- **Internet/web search:** Prefer using Tavily  
 - **Home location:** Abu Dhabi, UAE  
 
 ## Work Locations

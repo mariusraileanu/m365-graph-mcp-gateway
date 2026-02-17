@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MCP_URL="${GRAPH_MCP_URL:-http://127.0.0.1:3000/mcp}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  graph-mcp-write draft <to> <subject> <body>
+  graph-mcp-write draft-reply-all <event_id> <body>
+  graph-mcp-write respond <event_id> <accept|decline|tentativelyAccept>
+  graph-mcp-write create <subject> <start_iso> <end_iso> [attendees_csv] [body]
+EOF
+}
+
+mcp_call() {
+  local tool="$1"
+  local args_json='{}'
+  if [[ $# -ge 2 ]]; then
+    args_json="$2"
+  fi
+  python3 - "$tool" "$args_json" <<'PY' | curl -sS -X POST "$MCP_URL" -H 'Content-Type: application/json' --data-binary @-
+import json
+import sys
+
+tool = sys.argv[1]
+args = json.loads(sys.argv[2])
+payload = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {"name": tool, "arguments": args},
+}
+print(json.dumps(payload))
+PY
+}
+
+if [[ $# -lt 1 ]]; then
+  usage
+  exit 1
+fi
+
+cmd="$1"
+shift
+
+case "$cmd" in
+  draft)
+    [[ $# -eq 3 ]] || { usage; exit 1; }
+    mcp_call "draft_email" "{\"to\":\"$1\",\"subject\":\"$2\",\"body\":\"$3\"}"
+    ;;
+  draft-reply-all)
+    [[ $# -eq 2 ]] || { usage; exit 1; }
+    create_resp="$(mcp_call "draft_reply_all_event" "{\"eventId\":\"$1\",\"body\":\"$2\"}")"
+    draft_id="$(python3 - "$create_resp" <<'PY'
+import json
+import sys
+
+data = json.loads(sys.argv[1])
+result = data.get("result") or {}
+draft_id = (result.get("id") or "").strip()
+if not draft_id:
+    raise SystemExit("Failed to create reply-all draft")
+print(draft_id)
+PY
+)"
+    draft_json="$(mcp_call "get_email" "{\"messageId\":\"${draft_id}\"}")"
+    python3 - "$draft_json" <<'PY'
+import json
+import re
+import sys
+from html import unescape
+
+payload = json.loads(sys.argv[1])
+msg = payload.get("result") or {}
+
+def text_from_html(value: str) -> str:
+    value = re.sub(r"(?is)<(script|style).*?>.*?</\1>", " ", value)
+    value = re.sub(r"(?is)<br\\s*/?>", "\n", value)
+    value = re.sub(r"(?is)</p>", "\n", value)
+    value = re.sub(r"(?is)<hr[^>]*>", "\n---thread---\n", value)
+    value = re.sub(r"(?is)<[^>]+>", " ", value)
+    value = unescape(value)
+    value = re.sub(r"\r", "", value)
+    value = re.sub(r"[ \t]+\n", "\n", value)
+    value = re.sub(r"\n{3,}", "\n\n", value)
+    return value.strip()
+
+body_html = ((msg.get("body") or {}).get("content") or "")
+body_text = text_from_html(body_html)
+if "\n---thread---\n" in body_text:
+    body_text = body_text.split("\n---thread---\n", 1)[0].strip()
+
+summary = {
+    "draftId": msg.get("id"),
+    "subject": msg.get("subject"),
+    "to": [((r.get("emailAddress") or {}).get("address")) for r in (msg.get("toRecipients") or [])],
+    "cc": [((r.get("emailAddress") or {}).get("address")) for r in (msg.get("ccRecipients") or [])],
+    "body": body_text,
+}
+print(json.dumps(summary, ensure_ascii=False))
+PY
+    ;;
+  respond)
+    [[ $# -eq 2 ]] || { usage; exit 1; }
+    mcp_call "respond_event" "{\"eventId\":\"$1\",\"response\":\"$2\"}"
+    ;;
+  create)
+    [[ $# -ge 3 && $# -le 5 ]] || { usage; exit 1; }
+    attendees_csv="${4:-}"
+    body="${5:-}"
+    attendees_json="[]"
+    if [[ -n "$attendees_csv" ]]; then
+      attendees_json="$(python3 - "$attendees_csv" <<'PY'
+import json
+import sys
+emails = [e.strip() for e in sys.argv[1].split(",") if e.strip()]
+print(json.dumps(emails))
+PY
+)"
+    fi
+    mcp_call "create_meeting" "{\"subject\":\"$1\",\"startDateTime\":\"$2\",\"endDateTime\":\"$3\",\"attendees\":${attendees_json},\"body\":\"${body}\"}"
+    ;;
+  *)
+    if [[ "$cmd" == "send" ]]; then
+      echo "Use graph-mcp-send for sending emails."
+      exit 1
+    fi
+    usage
+    exit 1
+    ;;
+esac

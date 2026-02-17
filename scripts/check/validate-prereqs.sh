@@ -27,7 +27,7 @@ if [[ ! -f ".env" ]]; then
   err=1
 fi
 
-mkdir -p ./data/.openclaw ./data/workspace ./data/clippy ./data/whoop
+mkdir -p ./data/.openclaw ./data/workspace ./data/graph-mcp ./data/ms365 ./data/whoop
 
 if [[ "$err" -ne 0 ]]; then
   exit 1

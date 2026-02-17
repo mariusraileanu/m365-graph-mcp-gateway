@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MCP_URL="${GRAPH_MCP_URL:-http://127.0.0.1:3000/mcp}"
+
+if [[ $# -ne 4 || "$1" != "--send-now" ]]; then
+  echo "Usage: graph-mcp-send --send-now <to> <subject> <body>"
+  echo "Safety: create/review draft first, then send with explicit --send-now."
+  exit 1
+fi
+
+to="$2"
+subject="$3"
+body="$4"
+
+python3 - "$to" "$subject" "$body" <<'PY' | curl -sS -X POST "$MCP_URL" -H 'Content-Type: application/json' --data-binary @-
+import json
+import sys
+
+payload = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {
+        "name": "send_email",
+        "arguments": {
+            "to": sys.argv[1],
+            "subject": sys.argv[2],
+            "body": sys.argv[3],
+        },
+    },
+}
+print(json.dumps(payload))
+PY

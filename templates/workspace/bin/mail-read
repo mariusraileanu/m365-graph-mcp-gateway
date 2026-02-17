@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $# -ne 1 ]]; then
+  echo "Usage: mail-read <message_id>"
+  exit 1
+fi
+exec /home/node/workspace/bin/graph-mcp email "$1"

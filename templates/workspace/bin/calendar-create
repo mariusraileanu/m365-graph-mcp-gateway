@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $# -lt 3 || $# -gt 5 ]]; then
+  echo "Usage: calendar-create <subject> <start_iso> <end_iso> [attendees_csv] [body]"
+  exit 1
+fi
+exec /home/node/workspace/bin/graph-mcp-write create "$@"

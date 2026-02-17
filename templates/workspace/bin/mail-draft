@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ $# -ne 3 ]]; then
+  echo "Usage: mail-draft <to> <subject> <body>"
+  exit 1
+fi
+exec /home/node/workspace/bin/graph-mcp-write draft "$1" "$2" "$3"

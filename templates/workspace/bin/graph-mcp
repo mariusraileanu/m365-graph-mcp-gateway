@@ -1,0 +1,205 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+MCP_URL="${GRAPH_MCP_URL:-http://127.0.0.1:3000/mcp}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  graph-mcp tools
+  graph-mcp unread [top]
+  graph-mcp last <top>
+  graph-mcp unread3
+  graph-mcp next [minutes]
+  graph-mcp search [top] <query>
+  graph-mcp files [top] <query>
+  graph-mcp files-name [top] <query>
+  graph-mcp files-content [top] <query>
+  graph-mcp email <message_id>
+  graph-mcp calendar <start_iso> <end_iso>
+  graph-mcp today
+  graph-mcp tomorrow
+  graph-mcp week
+  graph-mcp free <start_iso> <end_iso> [duration_minutes]
+EOF
+}
+
+mcp_call() {
+  local tool="$1"
+  local args_json='{}'
+  if [[ $# -ge 2 ]]; then
+    args_json="$2"
+  fi
+  python3 - "$tool" "$args_json" <<'PY' | curl -sS -X POST "$MCP_URL" -H 'Content-Type: application/json' --data-binary @-
+import json
+import sys
+
+tool = sys.argv[1]
+args = json.loads(sys.argv[2])
+payload = {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "method": "tools/call",
+    "params": {"name": tool, "arguments": args},
+}
+print(json.dumps(payload))
+PY
+}
+
+if [[ $# -lt 1 ]]; then
+  usage
+  exit 1
+fi
+
+cmd="$1"
+shift
+
+case "$cmd" in
+  tools)
+    curl -sS -X POST "$MCP_URL" -H 'Content-Type: application/json' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}'
+    ;;
+  unread)
+    top="${1:-3}"
+    [[ "$top" =~ ^[0-9]+$ ]] || { echo "top must be a number"; exit 1; }
+    mcp_call "list_unread" "{\"top\":${top}}"
+    ;;
+  last)
+    top="${1:-3}"
+    [[ "$top" =~ ^[0-9]+$ ]] || { echo "top must be a number"; exit 1; }
+    mcp_call "list_unread" "{\"top\":${top}}"
+    ;;
+  unread3)
+    mcp_call "list_unread" "{\"top\":3}"
+    ;;
+  next)
+    minutes="${1:-60}"
+    [[ "$minutes" =~ ^[0-9]+$ ]] || { echo "minutes must be a number"; exit 1; }
+    read -r start_iso end_iso <<EOF
+$(python3 - "$minutes" <<'PY'
+from datetime import datetime, timedelta, timezone
+import sys
+utc = timezone.utc
+minutes = int(sys.argv[1])
+now = datetime.now(utc).replace(microsecond=0)
+end = now + timedelta(minutes=minutes)
+print(now.isoformat().replace("+00:00","Z"), end.isoformat().replace("+00:00","Z"))
+PY
+)
+EOF
+    mcp_call "list_calendar" "{\"startDate\":\"${start_iso}\",\"endDate\":\"${end_iso}\"}"
+    ;;
+  search)
+    [[ $# -ge 1 ]] || { usage; exit 1; }
+    top="25"
+    if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
+      top="$1"
+      shift
+    fi
+    query="$*"
+    [[ -n "$query" ]] || { echo "query is required"; exit 1; }
+    args_json="$(python3 - "$top" "$query" <<'PY'
+import json
+import sys
+print(json.dumps({"top": int(sys.argv[1]), "query": sys.argv[2]}))
+PY
+)"
+    mcp_call "search_emails" "$args_json"
+    ;;
+  files|files-name|files-content)
+    [[ $# -ge 1 ]] || { usage; exit 1; }
+    top="20"
+    if [[ "${1:-}" =~ ^[0-9]+$ ]]; then
+      top="$1"
+      shift
+    fi
+    query="$*"
+    [[ -n "$query" ]] || { echo "query is required"; exit 1; }
+    mode="both"
+    if [[ "$cmd" == "files-name" ]]; then
+      mode="name"
+    elif [[ "$cmd" == "files-content" ]]; then
+      mode="content"
+    fi
+    args_json="$(python3 - "$top" "$mode" "$query" <<'PY'
+import json
+import sys
+print(json.dumps({"top": int(sys.argv[1]), "mode": sys.argv[2], "query": sys.argv[3]}))
+PY
+)"
+    mcp_call "search_files" "$args_json"
+    ;;
+  email)
+    [[ $# -eq 1 ]] || { usage; exit 1; }
+    mcp_call "get_email" "{\"messageId\":\"$1\"}"
+    ;;
+  calendar)
+    [[ $# -eq 2 ]] || { usage; exit 1; }
+    mcp_call "list_calendar" "{\"startDate\":\"$1\",\"endDate\":\"$2\"}"
+    ;;
+  today)
+    read -r start_iso end_iso <<EOF
+$(python3 - <<'PY'
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+utc = timezone.utc
+tz = ZoneInfo("Asia/Dubai")
+now = datetime.now(tz)
+start_local = datetime(now.year, now.month, now.day, 0, 0, 0, tzinfo=tz)
+end_local = start_local + timedelta(days=1)
+start_utc = start_local.astimezone(utc)
+end_utc = end_local.astimezone(utc)
+print(start_utc.isoformat().replace("+00:00","Z"), end_utc.isoformat().replace("+00:00","Z"))
+PY
+)
+EOF
+    mcp_call "list_calendar" "{\"startDate\":\"${start_iso}\",\"endDate\":\"${end_iso}\"}"
+    ;;
+  tomorrow)
+    read -r start_iso end_iso <<EOF
+$(python3 - <<'PY'
+from datetime import datetime, timedelta, timezone
+utc = timezone.utc
+now = datetime.now(utc)
+tomorrow = now.date() + timedelta(days=1)
+start = datetime(tomorrow.year, tomorrow.month, tomorrow.day, 0, 0, 0, tzinfo=utc)
+end = start + timedelta(days=1)
+print(start.isoformat().replace("+00:00","Z"), end.isoformat().replace("+00:00","Z"))
+PY
+)
+EOF
+    mcp_call "list_calendar" "{\"startDate\":\"${start_iso}\",\"endDate\":\"${end_iso}\"}"
+    ;;
+  week)
+    read -r start_iso end_iso <<EOF
+$(python3 - <<'PY'
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
+utc = timezone.utc
+tz = ZoneInfo("Asia/Dubai")
+now = datetime.now(tz)
+start_local = datetime(now.year, now.month, now.day, 0, 0, 0, tzinfo=tz)
+start_local = start_local - timedelta(days=start_local.weekday())
+end_local = start_local + timedelta(days=7)
+start_utc = start_local.astimezone(utc)
+end_utc = end_local.astimezone(utc)
+print(start_utc.isoformat().replace("+00:00","Z"), end_utc.isoformat().replace("+00:00","Z"))
+PY
+)
+EOF
+    mcp_call "list_calendar" "{\"startDate\":\"${start_iso}\",\"endDate\":\"${end_iso}\"}"
+    ;;
+  free)
+    [[ $# -ge 2 && $# -le 3 ]] || { usage; exit 1; }
+    duration="${3:-60}"
+    mcp_call "find_free_slots" "{\"startDate\":\"$1\",\"endDate\":\"$2\",\"durationMinutes\":${duration}}"
+    ;;
+  *)
+    echo "Unsupported read command: ${cmd}"
+    echo "For mutating actions (draft/send/respond/create), use: graph-mcp-write"
+    usage
+    exit 1
+    ;;
+esac

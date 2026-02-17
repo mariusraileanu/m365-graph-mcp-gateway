@@ -29,22 +29,23 @@ load_env() {
 
 load_env
 
-echo "[1/2] Syncing Clippy auth..."
-CLIPPY_SOURCE="${CLIPPY_HOST_PROFILE_DIR:-$HOME/.config/clippy}"
-CLIPPY_DEST="./data/clippy"
+echo "[1/2] Syncing MS365 MCP auth..."
+MS365_SOURCE="${MS365_MCP_TOKEN_CACHE_PATH:-$HOME/.config/ms365-mcp}"
+MS365_DEST="./data/ms365"
 
-if [[ -f "${CLIPPY_SOURCE}/config.json" && -f "${CLIPPY_SOURCE}/token-cache.json" ]]; then
-  mkdir -p "$CLIPPY_DEST"
-  cp "${CLIPPY_SOURCE}/config.json" "$CLIPPY_DEST/"
-  cp "${CLIPPY_SOURCE}/token-cache.json" "$CLIPPY_DEST/"
-  if [[ -f "${CLIPPY_SOURCE}/storage-state.json" ]]; then
-    cp "${CLIPPY_SOURCE}/storage-state.json" "$CLIPPY_DEST/"
-  fi
-  chmod 600 "$CLIPPY_DEST"/*.json 2>/dev/null || true
-  echo "  Clippy auth synced."
+mkdir -p "$MS365_DEST"
+
+if [[ -f "${MS365_SOURCE}/.token-cache.json" ]]; then
+  cp "${MS365_SOURCE}/.token-cache.json" "$MS365_DEST/"
+  echo "  MS365 token cache synced."
+elif [[ -f "${MS365_SOURCE}/.msal_cache.json" ]]; then
+  cp "${MS365_SOURCE}/.msal_cache.json" "$MS365_DEST/"
+  echo "  MS365 MSAL cache synced."
 else
-  echo "  WARNING: Clippy files not found at ${CLIPPY_SOURCE}"
+  echo "  NOTE: MS365 auth not found at ${MS365_SOURCE}. Run 'make ms365-login' to authenticate."
 fi
+
+chmod 600 "$MS365_DEST"/*.json 2>/dev/null || true
 
 echo "[2/2] Syncing Whoop auth from .env..."
 WHOOP_DEST="./data/whoop"

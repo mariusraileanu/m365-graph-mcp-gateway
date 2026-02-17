@@ -1,0 +1,34 @@
+azure:
+  clientId: "${GRAPH_MCP_CLIENT_ID}"
+  clientSecret: "${GRAPH_MCP_CLIENT_SECRET}"
+  tenantId: "${GRAPH_MCP_TENANT_ID}"
+  redirectUri: "http://localhost"
+
+scopes:
+  - "Mail.Read"
+  - "Mail.ReadWrite"
+  - "Mail.Send"
+  - "Calendars.Read"
+  - "Calendars.Read.Shared"
+  - "Calendars.ReadWrite"
+  - "User.Read"
+  - "Files.Read.All"
+  - "Sites.Read.All"
+  - "Sites.Selected"
+
+guardrails:
+  email:
+    allowDomains:
+      - "doh.gov.ae"
+      - "gmail.com"
+      - "outlook.com"
+    requireDraftApproval: true
+    stripSensitiveFromLogs: true
+  audit:
+    enabled: true
+    logPath: "/home/node/graph-mcp/audit/audit.jsonl"
+    retentionDays: 90
+
+storage:
+  tokenPath: "/home/node/graph-mcp/tokens"
+  sessionTimeoutMinutes: 60

@@ -1,4 +1,4 @@
-.PHONY: help build up down status logs provision init auth-sync validate deploy test
+.PHONY: help build up down status logs provision init auth-sync validate deploy test ms365-login graph-login graph-user graph-unread cron-setup skills-setup
 
 SHELL := /bin/bash
 ROOT_DIR := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
@@ -8,18 +8,24 @@ help:
 	@echo "======================="
 	@echo "Local:"
 	@echo "make build         Build Docker image"
-	@echo "make up            Start container"
-	@echo "make down          Stop container"
-	@echo "make status        Show container status"
-	@echo "make logs          Follow container logs"
-	@echo "make init          Initialize config (first time)"
-	@echo "make provision     Provision and restart"
-	@echo "make auth-sync     Sync Clippy + Whoop auth"
-	@echo "make validate      Validate environment"
-	@echo "make test          Local: build + up + wait"
+	@echo "make up           Start container"
+	@echo "make down         Stop container"
+	@echo "make status       Show container status"
+	@echo "make logs         Follow container logs"
+	@echo "make init         Initialize config (first time)"
+	@echo "make provision    Provision and restart"
+	@echo "make auth-sync   Sync MS365 + Whoop auth"
+	@echo "make graph-login  Authenticate Graph MCP Gateway (M365)"
+	@echo "make graph-user   Show authenticated Graph user"
+	@echo "make graph-unread Show last 3 unread emails via Graph MCP"
+	@echo "make cron-setup   Create/update default cron jobs"
+	@echo "make skills-setup Install/refresh default skills in runtime volume"
+	@echo "make ms365-login  Alias for graph-login (deprecated)"
+	@echo "make validate     Validate environment"
+	@echo "make test        Local: build + up + wait"
 	@echo ""
 	@echo "Azure:"
-	@echo "make deploy        Deploy to Azure VM (1-click)"
+	@echo "make deploy      Deploy to Azure VM (1-click)"
 
 build:
 	@echo "Building OpenClaw..."
@@ -44,8 +50,8 @@ init:
 		exit 1; \
 	fi
 	@if [ ! -f data/.openclaw/openclaw.json ]; then \
-		mkdir -p data/.openclaw data/workspace data/clippy data/whoop; \
-		cp config/openclaw.json_example data/.openclaw/openclaw.json; \
+		mkdir -p data/.openclaw data/workspace data/graph-mcp data/ms365 data/whoop; \
+		cp config/openclaw.json.example data/.openclaw/openclaw.json; \
 		chmod 600 data/.openclaw/openclaw.json; \
 		echo "Config initialized."; \
 	else \
@@ -59,6 +65,28 @@ provision: init
 auth-sync:
 	@echo "Syncing auth..."
 	@./scripts/sync-auth.sh
+
+graph-login:
+	@echo "=== Graph MCP Login ==="
+	@echo "This will start Microsoft authentication for Graph MCP Gateway."
+	@echo ""
+	@docker exec -it openclaw sh -lc "cd /app/graph-mcp-gateway && node dist/index.js --login"
+
+graph-user:
+	@docker exec openclaw sh -lc "cd /app/graph-mcp-gateway && node dist/index.js --user"
+
+graph-unread:
+	@docker exec openclaw /home/node/workspace/bin/graph-mcp unread 3
+
+cron-setup:
+	@echo "Ensuring default cron jobs..."
+	@bash scripts/setup-cron.sh
+
+skills-setup:
+	@echo "Ensuring default skills..."
+	@bash scripts/setup-skills.sh
+
+ms365-login: graph-login
 
 validate:
 	@echo "Validating..."

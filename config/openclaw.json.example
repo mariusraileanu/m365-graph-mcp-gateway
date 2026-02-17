@@ -1,6 +1,6 @@
 {
   "meta": {
-    "lastTouchedVersion": "2026.2.10",
+    "lastTouchedVersion": "2026.2.15",
     "lastTouchedAt": "2026-02-13T15:12:43.378Z"
   },
   "models": {
@@ -94,12 +94,15 @@
       "security": "allowlist",
       "ask": "on-miss",
       "pathPrepend": [
+        "/home/node/workspace/bin",
         "/home/node/.openclaw/skills/tavily-search/scripts",
         "/home/node/.openclaw/skills/whoop-central/scripts",
         "/home/node/.openclaw/skills/weather/scripts"
       ],
       "safeBins": [
-        "clippy",
+        "graph-mcp",
+        "graph-mcp-write",
+        "summarize",
         "tavily-search",
         "tavily-extract",
         "whoop-central",
