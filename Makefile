@@ -1,4 +1,4 @@
-.PHONY: help build up down status logs provision init auth-sync validate deploy test ms365-login graph-login graph-user graph-unread cron-setup skills-setup
+.PHONY: help build up down status logs provision init auth-sync validate deploy test ms365-login graph-login graph-user graph-unread cron-setup skills-setup whatsapp-login whatsapp-pairing-list whatsapp-pairing-approve signal-status signal-link
 
 SHELL := /bin/bash
 ROOT_DIR := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
@@ -20,12 +20,17 @@ help:
 	@echo "make graph-unread Show last 3 unread emails via Graph MCP"
 	@echo "make cron-setup   Create/update default cron jobs"
 	@echo "make skills-setup Install/refresh default skills in runtime volume"
+	@echo "make whatsapp-login Link WhatsApp via QR (default account)"
+	@echo "make whatsapp-pairing-list List pending WhatsApp pairing codes"
+	@echo "make whatsapp-pairing-approve CODE=<code> Approve pairing request"
+	@echo "make signal-status Show Signal channel status"
+	@echo "make signal-link [ACCOUNT=+15551234567] Start Signal link flow"
 	@echo "make ms365-login  Alias for graph-login (deprecated)"
 	@echo "make validate     Validate environment"
 	@echo "make test        Local: build + up + wait"
 	@echo ""
 	@echo "Azure:"
-	@echo "make deploy      Deploy to Azure VM (1-click)"
+	@echo "make deploy      One-click Azure deploy (RG + VM + bootstrap + provision)"
 
 build:
 	@echo "Building OpenClaw..."
@@ -86,6 +91,29 @@ skills-setup:
 	@echo "Ensuring default skills..."
 	@bash scripts/setup-skills.sh
 
+whatsapp-login:
+	@docker exec -it openclaw node /opt/openclaw/openclaw.mjs channels login --channel whatsapp
+
+whatsapp-pairing-list:
+	@docker exec openclaw node /opt/openclaw/openclaw.mjs pairing list whatsapp
+
+whatsapp-pairing-approve:
+	@if [ -z "$(CODE)" ]; then \
+		echo "Usage: make whatsapp-pairing-approve CODE=<PAIRING_CODE>"; \
+		exit 1; \
+	fi
+	@docker exec openclaw node /opt/openclaw/openclaw.mjs pairing approve whatsapp "$(CODE)"
+
+signal-status:
+	@docker exec openclaw node /opt/openclaw/openclaw.mjs channels list
+
+signal-link:
+	@if [ -n "$(ACCOUNT)" ]; then \
+		docker exec -it openclaw node /opt/openclaw/openclaw.mjs channels login --channel signal --account "$(ACCOUNT)"; \
+	else \
+		docker exec -it openclaw node /opt/openclaw/openclaw.mjs channels login --channel signal; \
+	fi
+
 ms365-login: graph-login
 
 validate:
@@ -105,37 +133,4 @@ test: build up
 	@docker ps --filter name=openclaw
 
 deploy:
-	@echo "=== Azure 1-Click Deploy ==="
-	@echo ""
-	@if ! command -v az >/dev/null 2>&1; then \
-		echo "ERROR: Azure CLI (az) not installed."; \
-		echo "Install: https://docs.microsoft.com/en-us/cli/azure/install-azure-cli"; \
-		exit 1; \
-	fi
-	@echo "Checking Azure login..."
-	@az account show >/dev/null 2>&1 || (echo "ERROR: Run 'az login' first" && exit 1)
-	@echo ""
-	@echo "Creating resource group 'openclaw'..."
-	@az group create -n openclaw -l uaenorth --output none 2>/dev/null || true
-	@echo "Deploying VM (this may take 2-3 minutes)..."
-	@IP=$$(az vm create \
-		--resource-group openclaw \
-		--name openclaw \
-		--image Ubuntu22004 \
-		--size Standard_D2s_v3 \
-		--admin-user azureuser \
-		--ssh-key-value ~/.ssh/id_rsa.pub \
-		--custom-data cloud-init.yaml \
-		--output tsv --query publicIpAddress); \
-	echo ""; \
-	echo "========================================"; \
-	echo "VM deployed successfully!"; \
-	echo "========================================"; \
-	echo ""; \
-	echo "IP: $$IP"; \
-	echo ""; \
-	echo "Next steps:"; \
-	echo "  1. ssh azureuser@$$IP"; \
-	echo "  2. cd /opt/openclaw-docker"; \
-	echo "  3. cp .env_example .env && nano .env"; \
-	echo "  4. make build && make up && make provision"
+	@bash scripts/deploy-azure-oneclick.sh

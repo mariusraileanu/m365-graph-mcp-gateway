@@ -126,6 +126,21 @@
       "dmPolicy": "pairing",
       "groupPolicy": "disabled",
       "streamMode": "partial"
+    },
+    "whatsapp": {
+      "dmPolicy": "pairing",
+      "groupPolicy": "allowlist",
+      "allowFrom": [],
+      "groupAllowFrom": []
+    },
+    "signal": {
+      "enabled": false,
+      "account": "",
+      "cliPath": "signal-cli",
+      "dmPolicy": "pairing",
+      "allowFrom": [],
+      "groupPolicy": "allowlist",
+      "groupAllowFrom": []
     }
   },
   "gateway": {
@@ -144,6 +159,12 @@
     "entries": {
       "telegram": {
         "enabled": true
+      },
+      "whatsapp": {
+        "enabled": true
+      },
+      "signal": {
+        "enabled": false
       }
     }
   },

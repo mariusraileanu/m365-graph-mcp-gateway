@@ -43,7 +43,7 @@ PY
 }
 
 # Check required vars
-REQUIRED_VARS="COMPASS_API_KEY TELEGRAM_BOT_TOKEN OPENCLAW_GATEWAY_AUTH_TOKEN OPENCLAW_TELEGRAM_TARGET_ID"
+REQUIRED_VARS="COMPASS_API_KEY TELEGRAM_BOT_TOKEN OPENCLAW_GATEWAY_AUTH_TOKEN OPENCLAW_TELEGRAM_TARGET_ID GRAPH_MCP_CLIENT_ID GRAPH_MCP_TENANT_ID"
 for var in $REQUIRED_VARS; do
   value="$(get_env_var "$var")"
   if [[ -z "$value" ]]; then
@@ -53,9 +53,23 @@ for var in $REQUIRED_VARS; do
 done
 
 OPENCLAW_GATEWAY_AUTH_TOKEN="$(get_env_var OPENCLAW_GATEWAY_AUTH_TOKEN)"
+OPENCLAW_WHATSAPP_ENABLED="$(get_env_var OPENCLAW_WHATSAPP_ENABLED)"
+OPENCLAW_WHATSAPP_DM_POLICY="$(get_env_var OPENCLAW_WHATSAPP_DM_POLICY)"
+OPENCLAW_WHATSAPP_ALLOW_FROM="$(get_env_var OPENCLAW_WHATSAPP_ALLOW_FROM)"
+OPENCLAW_WHATSAPP_GROUP_POLICY="$(get_env_var OPENCLAW_WHATSAPP_GROUP_POLICY)"
+OPENCLAW_WHATSAPP_GROUP_ALLOW_FROM="$(get_env_var OPENCLAW_WHATSAPP_GROUP_ALLOW_FROM)"
+OPENCLAW_SIGNAL_ENABLED="$(get_env_var OPENCLAW_SIGNAL_ENABLED)"
+OPENCLAW_SIGNAL_ACCOUNT="$(get_env_var OPENCLAW_SIGNAL_ACCOUNT)"
+OPENCLAW_SIGNAL_CLI_PATH="$(get_env_var OPENCLAW_SIGNAL_CLI_PATH)"
+OPENCLAW_SIGNAL_DM_POLICY="$(get_env_var OPENCLAW_SIGNAL_DM_POLICY)"
+OPENCLAW_SIGNAL_ALLOW_FROM="$(get_env_var OPENCLAW_SIGNAL_ALLOW_FROM)"
+OPENCLAW_SIGNAL_GROUP_POLICY="$(get_env_var OPENCLAW_SIGNAL_GROUP_POLICY)"
+OPENCLAW_SIGNAL_GROUP_ALLOW_FROM="$(get_env_var OPENCLAW_SIGNAL_GROUP_ALLOW_FROM)"
 
 # Ensure directories
 mkdir -p data/.openclaw data/workspace data/graph-mcp data/ms365 data/whoop
+NODE_UID="${OPENCLAW_DATA_UID:-1000}"
+NODE_GID="${OPENCLAW_DATA_GID:-1000}"
 
 # Initialize config if not exists
 if [[ ! -f data/.openclaw/openclaw.json ]]; then
@@ -69,6 +83,27 @@ import json
 
 cfg_path = "data/.openclaw/openclaw.json"
 token = "${OPENCLAW_GATEWAY_AUTH_TOKEN}"
+whatsapp_dm_policy = "${OPENCLAW_WHATSAPP_DM_POLICY}".strip() or "pairing"
+whatsapp_allow_from = "${OPENCLAW_WHATSAPP_ALLOW_FROM}".strip()
+whatsapp_group_policy = "${OPENCLAW_WHATSAPP_GROUP_POLICY}".strip() or "allowlist"
+whatsapp_group_allow_from = "${OPENCLAW_WHATSAPP_GROUP_ALLOW_FROM}".strip()
+signal_enabled_raw = "${OPENCLAW_SIGNAL_ENABLED}".strip().lower()
+signal_account = "${OPENCLAW_SIGNAL_ACCOUNT}".strip()
+signal_cli_path = "${OPENCLAW_SIGNAL_CLI_PATH}".strip() or "signal-cli"
+signal_dm_policy = "${OPENCLAW_SIGNAL_DM_POLICY}".strip() or "pairing"
+signal_allow_from = "${OPENCLAW_SIGNAL_ALLOW_FROM}".strip()
+signal_group_policy = "${OPENCLAW_SIGNAL_GROUP_POLICY}".strip() or "allowlist"
+signal_group_allow_from = "${OPENCLAW_SIGNAL_GROUP_ALLOW_FROM}".strip()
+
+def parse_csv(value: str):
+    if not value:
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+def parse_bool(value: str, default: bool = False):
+    if not value:
+        return default
+    return value in {"1", "true", "yes", "on"}
 
 with open(cfg_path, "r") as f:
     obj = json.load(f)
@@ -113,6 +148,34 @@ skills_cfg = obj.setdefault("skills", {})
 entries = skills_cfg.setdefault("entries", {})
 entries.setdefault("tavily", {})["enabled"] = True
 
+channels_cfg = obj.setdefault("channels", {})
+whatsapp_cfg = channels_cfg.setdefault("whatsapp", {})
+whatsapp_cfg["dmPolicy"] = whatsapp_dm_policy
+whatsapp_cfg["allowFrom"] = parse_csv(whatsapp_allow_from)
+whatsapp_cfg["groupPolicy"] = whatsapp_group_policy
+whatsapp_cfg["groupAllowFrom"] = parse_csv(whatsapp_group_allow_from)
+
+plugins_cfg = obj.setdefault("plugins", {})
+plugins_entries = plugins_cfg.setdefault("entries", {})
+plugins_entries.setdefault("whatsapp", {})["enabled"] = True
+
+signal_enabled = parse_bool(signal_enabled_raw, False) and bool(signal_account)
+channels_cfg = obj.setdefault("channels", {})
+signal_cfg = channels_cfg.setdefault("signal", {})
+signal_cfg["enabled"] = signal_enabled
+if signal_enabled:
+    signal_cfg["account"] = signal_account
+    signal_cfg["cliPath"] = signal_cli_path
+    signal_cfg["dmPolicy"] = signal_dm_policy
+    signal_cfg["allowFrom"] = parse_csv(signal_allow_from)
+    signal_cfg["groupPolicy"] = signal_group_policy
+    signal_cfg["groupAllowFrom"] = parse_csv(signal_group_allow_from)
+else:
+    signal_cfg["account"] = signal_account
+    signal_cfg["cliPath"] = signal_cli_path
+
+plugins_entries.setdefault("signal", {})["enabled"] = signal_enabled
+
 with open(cfg_path, "w") as f:
     json.dump(obj, f, indent=2)
 
@@ -138,6 +201,10 @@ if [[ -d templates/workspace/automation ]]; then
   cp -R templates/workspace/automation/. data/workspace/automation/
   cp -R templates/workspace/automation/. data/.openclaw/workspace/automation/
 fi
+
+# Ensure container user can read/write mounted state.
+chown -R "${NODE_UID}:${NODE_GID}" data/.openclaw data/workspace data/graph-mcp data/ms365 data/whoop 2>/dev/null || true
+chmod 600 data/.openclaw/openclaw.json 2>/dev/null || true
 
 # Restart container
 echo "Restarting container..."

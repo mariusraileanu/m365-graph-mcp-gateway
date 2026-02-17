@@ -68,6 +68,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates chromium curl python3 unzip && rm -rf /var/lib/apt/lists/*
 
+RUN set -eux; \
+    SIGNAL_CLI_VERSION="$(curl -Ls -o /dev/null -w '%{url_effective}' https://github.com/AsamK/signal-cli/releases/latest | sed -E 's#.*/v##')"; \
+    curl -fsSL -o /tmp/signal-cli.tar.gz "https://github.com/AsamK/signal-cli/releases/download/v${SIGNAL_CLI_VERSION}/signal-cli-${SIGNAL_CLI_VERSION}-Linux-native.tar.gz"; \
+    tar -xzf /tmp/signal-cli.tar.gz -C /opt; \
+    ln -sf /opt/signal-cli /usr/local/bin/signal-cli; \
+    rm -f /tmp/signal-cli.tar.gz; \
+    signal-cli --version
+
 RUN corepack enable && corepack prepare "pnpm@${PNPM_VERSION}" --activate
 RUN curl -fsSL https://bun.sh/install | bash
 RUN printf '%s\n' '#!/usr/bin/env bash' 'exec node /opt/openclaw/openclaw.mjs "$@"' > /usr/local/bin/openclaw \
