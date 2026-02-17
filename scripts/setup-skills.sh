@@ -24,7 +24,6 @@ install_skill() {
 
 install_skill "tavily-search"
 install_skill "weather"
-install_skill "goplaces"
 install_skill "playwright-mcp"
 install_skill "summarize"
 

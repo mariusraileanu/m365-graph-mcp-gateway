@@ -119,8 +119,7 @@ openclaw message send --channel telegram --target <CHAT_ID> --message "..."
 
 ### Discovery
 
-- Primary: `goplaces`
-- Fallback: `tavily-search`
+- Primary: `tavily-search`
 
 ### Booking execution
 

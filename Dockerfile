@@ -38,7 +38,6 @@ FROM builder AS skills
 RUN mkdir -p /home/node/.openclaw/skills \
     && npx -y "clawhub@${CLAWHUB_VERSION}" install --workdir /home/node/.openclaw --dir skills tavily-search \
     && npx -y "clawhub@${CLAWHUB_VERSION}" install --workdir /home/node/.openclaw --dir skills weather \
-    && npx -y "clawhub@${CLAWHUB_VERSION}" install --workdir /home/node/.openclaw --dir skills goplaces \
     && npx -y "clawhub@${CLAWHUB_VERSION}" install --workdir /home/node/.openclaw --dir skills playwright-mcp \
     && npx -y "clawhub@${CLAWHUB_VERSION}" install --workdir /home/node/.openclaw --dir skills summarize
 
@@ -88,7 +87,6 @@ COPY --from=skills /home/node/.openclaw /home/node/.openclaw
 COPY --from=skills /home/node/.openclaw/skills /opt/bundled-skills
 COPY --from=skills /home/node/.openclaw/skills/tavily-search /opt/openclaw/skills/tavily-search
 COPY --from=skills /home/node/.openclaw/skills/weather /opt/openclaw/skills/weather
-COPY --from=skills /home/node/.openclaw/skills/goplaces /opt/openclaw/skills/goplaces
 COPY --from=skills /home/node/.openclaw/skills/playwright-mcp /opt/openclaw/skills/playwright-mcp
 COPY --from=skills /home/node/.openclaw/skills/summarize /opt/openclaw/skills/summarize
 COPY templates/skills/tavily-search/SKILL.md /opt/bundled-skills/tavily-search/SKILL.md

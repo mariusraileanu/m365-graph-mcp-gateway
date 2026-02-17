@@ -292,7 +292,7 @@ Restaurant discovery and booking are pre-approved.
 
 Execution flow:
 
-1. Discover candidates via `goplaces` (fallback: Tavily).
+1. Discover candidates via `tavily-search`.
 2. Rank using:
    - Rating (desc)
    - Review volume (desc)
