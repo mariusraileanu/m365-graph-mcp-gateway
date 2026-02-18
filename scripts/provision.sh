@@ -138,7 +138,7 @@ for tool in (
     "mail-unread", "mail-read", "mail-search", "mail-draft", "mail-draft-reply-all", "mail-send",
     "calendar-next", "calendar-read", "calendar-today", "calendar-tomorrow", "calendar-week", "calendar-free", "calendar-create", "calendar-respond", "meeting-radar",
     "sharepoint-file-search", "sharepoint-file-name-search", "sharepoint-file-content-search",
-    "tavily-search", "tavily-extract", "summarize", "node", "curl", "npx", "playwright-mcp"
+    "tavily-search", "tavily-extract", "summarize", "weather", "node", "curl", "npx", "playwright-mcp"
 ):
     if tool not in safe_bins:
         safe_bins.append(tool)
