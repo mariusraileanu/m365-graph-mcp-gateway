@@ -1,4 +1,4 @@
-.PHONY: help build up down status logs provision init auth-sync validate deploy test ms365-login graph-login graph-user graph-unread cron-setup skills-setup whatsapp-login whatsapp-pairing-list whatsapp-pairing-approve signal-status signal-link
+.PHONY: help build up down status logs provision init auth-sync validate deploy test ms365-login graph-login graph-user graph-unread cron-setup skills-setup whatsapp-login whatsapp-pairing-list whatsapp-pairing-approve signal-status signal-link signal-sidecar-up signal-sidecar-down signal-sidecar-logs
 
 SHELL := /bin/bash
 ROOT_DIR := $(shell dirname $(realpath $(firstword $(MAKEFILE_LIST))))
@@ -25,6 +25,9 @@ help:
 	@echo "make whatsapp-pairing-approve CODE=<code> Approve pairing request"
 	@echo "make signal-status Show Signal channel status"
 	@echo "make signal-link [ACCOUNT=+15551234567] Start Signal link flow"
+	@echo "make signal-sidecar-up Start Signal sidecar service"
+	@echo "make signal-sidecar-down Stop Signal sidecar service"
+	@echo "make signal-sidecar-logs Tail Signal sidecar logs"
 	@echo "make ms365-login  Alias for graph-login (deprecated)"
 	@echo "make validate     Validate environment"
 	@echo "make test        Local: build + up + wait"
@@ -113,6 +116,15 @@ signal-link:
 	else \
 		docker exec -it openclaw node /opt/openclaw/openclaw.mjs channels login --channel signal; \
 	fi
+
+signal-sidecar-up:
+	@docker compose --profile signal up -d signal-api
+
+signal-sidecar-down:
+	@docker compose --profile signal stop signal-api
+
+signal-sidecar-logs:
+	@docker logs -f signal-api
 
 ms365-login: graph-login
 

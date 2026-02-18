@@ -61,13 +61,14 @@ OPENCLAW_WHATSAPP_GROUP_ALLOW_FROM="$(get_env_var OPENCLAW_WHATSAPP_GROUP_ALLOW_
 OPENCLAW_SIGNAL_ENABLED="$(get_env_var OPENCLAW_SIGNAL_ENABLED)"
 OPENCLAW_SIGNAL_ACCOUNT="$(get_env_var OPENCLAW_SIGNAL_ACCOUNT)"
 OPENCLAW_SIGNAL_CLI_PATH="$(get_env_var OPENCLAW_SIGNAL_CLI_PATH)"
+OPENCLAW_SIGNAL_HTTP_URL="$(get_env_var OPENCLAW_SIGNAL_HTTP_URL)"
 OPENCLAW_SIGNAL_DM_POLICY="$(get_env_var OPENCLAW_SIGNAL_DM_POLICY)"
 OPENCLAW_SIGNAL_ALLOW_FROM="$(get_env_var OPENCLAW_SIGNAL_ALLOW_FROM)"
 OPENCLAW_SIGNAL_GROUP_POLICY="$(get_env_var OPENCLAW_SIGNAL_GROUP_POLICY)"
 OPENCLAW_SIGNAL_GROUP_ALLOW_FROM="$(get_env_var OPENCLAW_SIGNAL_GROUP_ALLOW_FROM)"
 
 # Ensure directories
-mkdir -p data/.openclaw data/workspace data/graph-mcp data/ms365 data/whoop
+mkdir -p data/.openclaw data/workspace data/graph-mcp data/ms365 data/whoop data/signal
 NODE_UID="${OPENCLAW_DATA_UID:-1000}"
 NODE_GID="${OPENCLAW_DATA_GID:-1000}"
 
@@ -90,6 +91,7 @@ whatsapp_group_allow_from = "${OPENCLAW_WHATSAPP_GROUP_ALLOW_FROM}".strip()
 signal_enabled_raw = "${OPENCLAW_SIGNAL_ENABLED}".strip().lower()
 signal_account = "${OPENCLAW_SIGNAL_ACCOUNT}".strip()
 signal_cli_path = "${OPENCLAW_SIGNAL_CLI_PATH}".strip() or "signal-cli"
+signal_http_url = "${OPENCLAW_SIGNAL_HTTP_URL}".strip()
 signal_dm_policy = "${OPENCLAW_SIGNAL_DM_POLICY}".strip() or "pairing"
 signal_allow_from = "${OPENCLAW_SIGNAL_ALLOW_FROM}".strip()
 signal_group_policy = "${OPENCLAW_SIGNAL_GROUP_POLICY}".strip() or "allowlist"
@@ -159,13 +161,19 @@ plugins_cfg = obj.setdefault("plugins", {})
 plugins_entries = plugins_cfg.setdefault("entries", {})
 plugins_entries.setdefault("whatsapp", {})["enabled"] = True
 
-signal_enabled = parse_bool(signal_enabled_raw, False) and bool(signal_account)
+signal_enabled = parse_bool(signal_enabled_raw, False) and bool(signal_account or signal_http_url)
 channels_cfg = obj.setdefault("channels", {})
 signal_cfg = channels_cfg.setdefault("signal", {})
 signal_cfg["enabled"] = signal_enabled
 if signal_enabled:
     signal_cfg["account"] = signal_account
     signal_cfg["cliPath"] = signal_cli_path
+    if signal_http_url:
+        signal_cfg["httpUrl"] = signal_http_url
+        signal_cfg["autoStart"] = False
+    else:
+        signal_cfg.pop("httpUrl", None)
+        signal_cfg.pop("autoStart", None)
     signal_cfg["dmPolicy"] = signal_dm_policy
     signal_cfg["allowFrom"] = parse_csv(signal_allow_from)
     signal_cfg["groupPolicy"] = signal_group_policy
@@ -173,6 +181,8 @@ if signal_enabled:
 else:
     signal_cfg["account"] = signal_account
     signal_cfg["cliPath"] = signal_cli_path
+    signal_cfg.pop("httpUrl", None)
+    signal_cfg.pop("autoStart", None)
 
 plugins_entries.setdefault("signal", {})["enabled"] = signal_enabled
 
@@ -203,12 +213,16 @@ if [[ -d templates/workspace/automation ]]; then
 fi
 
 # Ensure container user can read/write mounted state.
-chown -R "${NODE_UID}:${NODE_GID}" data/.openclaw data/workspace data/graph-mcp data/ms365 data/whoop 2>/dev/null || true
+chown -R "${NODE_UID}:${NODE_GID}" data/.openclaw data/workspace data/graph-mcp data/ms365 data/whoop data/signal 2>/dev/null || true
 chmod 600 data/.openclaw/openclaw.json 2>/dev/null || true
 
 # Restart container
 echo "Restarting container..."
-docker compose up -d --force-recreate
+if [[ "${OPENCLAW_SIGNAL_ENABLED,,}" == "true" || "${OPENCLAW_SIGNAL_ENABLED,,}" == "1" || "${OPENCLAW_SIGNAL_ENABLED,,}" == "yes" ]]; then
+  docker compose --profile signal up -d --force-recreate
+else
+  docker compose up -d --force-recreate
+fi
 
 # Wait for healthy
 echo "Waiting for container..."
