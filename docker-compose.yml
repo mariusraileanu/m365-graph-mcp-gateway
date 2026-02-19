@@ -1,85 +1,24 @@
 services:
-  openclaw:
+  m365-graph-mcp-gateway:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        ENV_FILE: ./config/versions.env
-    container_name: openclaw
+    container_name: m365-graph-mcp-gateway
     restart: unless-stopped
-    user: "node"
-    networks:
-      - openclaw-net
-    init: true
     ports:
-      - "127.0.0.1:18789:18789"
       - "127.0.0.1:18790:3000"
-    volumes:
-      - ./data/.openclaw:/home/node/.openclaw:rw
-      - ./data/workspace:/home/node/workspace:rw
-      - ./data/ms365:/home/node/.config/ms365-mcp:rw
-      - ./data/whoop:/home/node/.clawdbot/whoop:rw
-      - ./data/graph-mcp:/home/node/graph-mcp:rw
     env_file:
       - .env
     environment:
-      OPENCLAW_GATEWAY_AUTH_TOKEN: ${OPENCLAW_GATEWAY_AUTH_TOKEN}
-      OPENCLAW_GATEWAY_TOKEN: ${OPENCLAW_GATEWAY_AUTH_TOKEN}
-      OPENCLAW_STATE_DIR: /home/node/.openclaw
-      OPENCLAW_CONFIG_PATH: /home/node/.openclaw/openclaw.json
-      HOME: /home/node
-      XDG_CACHE_HOME: /home/node/.openclaw/cache
-      COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
       GRAPH_MCP_CLIENT_ID: ${GRAPH_MCP_CLIENT_ID}
       GRAPH_MCP_CLIENT_SECRET: ${GRAPH_MCP_CLIENT_SECRET}
       GRAPH_MCP_TENANT_ID: ${GRAPH_MCP_TENANT_ID}
-      PLAYWRIGHT_BROWSERS_PATH: /home/node/.openclaw/playwright-browsers
-    cpus: "${OPENCLAW_CPUS:-2.0}"
-    mem_limit: "${OPENCLAW_MEM_LIMIT:-4g}"
-    pids_limit: ${OPENCLAW_PIDS_LIMIT:-512}
-    ulimits:
-      nofile:
-        soft: 65536
-        hard: 65536
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
-    read_only: false
-    tmpfs:
-      - /tmp:rw,nosuid,nodev,size=512m
-      - /run:rw,nosuid,nodev,size=64m
-      - /var/tmp:rw,nosuid,nodev,size=256m
-      - /home/node/.cache:rw,nosuid,nodev,size=512m
-      - /home/node/.pki:rw,nosuid,nodev,size=64m
-      - /home/node/.local:rw,nosuid,nodev,size=256m
-      - /app/graph-mcp-gateway/data:rw,nosuid,nodev,size=64m
+      NODE_ENV: production
+    volumes:
+      - ./data/m365-graph-mcp-gateway:/home/node/m365-graph-mcp-gateway:rw
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:18789/ > /dev/null || exit 1"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/health > /dev/null || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 5
       start_period: 20s
-
-  signal-api:
-    image: bbernhard/signal-cli-rest-api:latest
-    container_name: signal-api
-    restart: unless-stopped
-    profiles:
-      - signal
-    ports:
-      - "127.0.0.1:18080:8080"
-    entrypoint: ["signal-cli"]
-    command:
-      - "--config"
-      - "/home/.local/share/signal-cli"
-      - "daemon"
-      - "--http=0.0.0.0:8080"
-      - "--receive-mode=on-start"
-    volumes:
-      - ./data/signal:/home/.local/share/signal-cli:rw
-
-networks:
-  openclaw-net:
-    name: openclaw-net
-    driver: bridge

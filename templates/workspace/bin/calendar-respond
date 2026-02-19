@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ $# -ne 2 ]]; then
-  echo "Usage: calendar-respond <event_id> <accept|decline|tentativelyAccept>"
-  exit 1
-fi
-exec /home/node/workspace/bin/graph-mcp-write respond "$1" "$2"

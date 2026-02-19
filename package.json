@@ -1,5 +1,5 @@
 {
-  "name": "graph-mcp-gateway",
+  "name": "m365-graph-mcp-gateway",
   "version": "1.0.0",
   "description": "Opinionated MCP gateway for Microsoft Graph API with MSAL auth and guardrails",
   "main": "dist/index.js",

@@ -244,7 +244,7 @@ async function getAccessToken(): Promise<string> {
   } catch (error) {
     if (error instanceof InteractionRequiredAuthError) {
       // Never trigger interactive login from request path; callers should run --login explicitly.
-      throw new Error('Authentication expired. Run graph-mcp-gateway login (make graph-login) to re-authenticate.');
+      throw new Error('Authentication expired. Run m365-graph-mcp-gateway login (make login) to re-authenticate.');
     }
     throw error;
   }
@@ -375,15 +375,36 @@ interface CalendarEvent {
 
 interface FileSearchResult {
   id: string;
+  driveId?: string;
   name: string;
   webUrl?: string;
   path?: string;
   lastModifiedDateTime?: string;
   size?: number;
+  summary?: string;
   file?: Record<string, unknown>;
   createdBy?: { user?: { displayName?: string; email?: string } };
   lastModifiedBy?: { user?: { displayName?: string; email?: string } };
   source: 'search';
+}
+
+interface DriveItemMetadata {
+  id: string;
+  driveId: string;
+  name: string;
+  size?: number;
+  webUrl?: string;
+  lastModifiedDateTime?: string;
+  mimeType?: string;
+}
+
+interface FileReadResult {
+  item: DriveItemMetadata;
+  contentType?: string;
+  extractedText: string;
+  extractedChars: number;
+  truncated: boolean;
+  source: 'graph-content';
 }
 
 async function listUnreadEmails(top = 10): Promise<EmailMessage[]> {
@@ -585,9 +606,11 @@ function toFileSearchResult(resource: Record<string, unknown>): FileSearchResult
 
   const parentReference = (resource.parentReference || {}) as Record<string, unknown>;
   const path = typeof parentReference.path === 'string' ? parentReference.path : undefined;
+  const driveId = typeof parentReference.driveId === 'string' ? parentReference.driveId : undefined;
 
   return {
     id,
+    driveId,
     name,
     webUrl: typeof resource.webUrl === 'string' ? resource.webUrl : undefined,
     path,
@@ -643,14 +666,14 @@ async function searchFiles(query: string, top = 20, mode: 'name' | 'content' | '
     const resource = (hitObj.resource || {}) as Record<string, unknown>;
     const mapped = toFileSearchResult(resource);
     if (!mapped) continue;
+    mapped.summary = String(hitObj.summary || '').trim() || undefined;
 
     if (mode === 'name') {
       if (!mapped.name.toLowerCase().includes(q)) continue;
     } else if (mode === 'content') {
       const summary = String(hitObj.summary || '').toLowerCase();
-      const inName = mapped.name.toLowerCase().includes(q);
       const inSummary = summary.includes(q);
-      if (!(inSummary || !inName)) continue;
+      if (!inSummary) continue;
     }
 
     results.push(mapped);
@@ -658,6 +681,92 @@ async function searchFiles(query: string, top = 20, mode: 'name' | 'content' | '
 
   results.sort((a, b) => (b.lastModifiedDateTime || '').localeCompare(a.lastModifiedDateTime || ''));
   return results.slice(0, top);
+}
+
+function stripHtml(input: string): string {
+  return input
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/\s+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
+function isTextLike(contentType: string, fileName: string): boolean {
+  const ct = contentType.toLowerCase();
+  const name = fileName.toLowerCase();
+  if (ct.startsWith('text/')) return true;
+  if (ct.includes('json') || ct.includes('xml') || ct.includes('yaml') || ct.includes('csv')) return true;
+  return ['.txt', '.md', '.csv', '.json', '.xml', '.yml', '.yaml', '.log', '.html', '.htm'].some(ext => name.endsWith(ext));
+}
+
+function isUnsupportedBinary(contentType: string, fileName: string): boolean {
+  const ct = contentType.toLowerCase();
+  const name = fileName.toLowerCase();
+  if (ct.includes('pdf') || ct.includes('officedocument')) return true;
+  return ['.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xls', '.xlsx'].some(ext => name.endsWith(ext));
+}
+
+async function getDriveItemMetadata(driveId: string, itemId: string): Promise<DriveItemMetadata> {
+  const client = getGraphClient();
+  const item = await client.api(`/drives/${driveId}/items/${itemId}`)
+    .select('id,name,size,webUrl,lastModifiedDateTime,file,parentReference')
+    .get();
+
+  const parentReference = (item?.parentReference || {}) as Record<string, unknown>;
+  const resolvedDriveId = String(parentReference.driveId || driveId || '').trim();
+  if (!resolvedDriveId) throw new Error('Could not resolve driveId for file.');
+
+  return {
+    id: String(item?.id || itemId),
+    driveId: resolvedDriveId,
+    name: String(item?.name || 'unknown'),
+    size: typeof item?.size === 'number' ? item.size : undefined,
+    webUrl: typeof item?.webUrl === 'string' ? item.webUrl : undefined,
+    lastModifiedDateTime: typeof item?.lastModifiedDateTime === 'string' ? item.lastModifiedDateTime : undefined,
+    mimeType: typeof item?.file?.mimeType === 'string' ? item.file.mimeType : undefined,
+  };
+}
+
+async function readDriveItemText(driveId: string, itemId: string, maxChars = 12000): Promise<FileReadResult> {
+  const item = await getDriveItemMetadata(driveId, itemId);
+  const token = await getAccessToken();
+  const endpoint = `https://graph.microsoft.com/v1.0/drives/${encodeURIComponent(item.driveId)}/items/${encodeURIComponent(item.id)}/content`;
+  const response = await fetch(endpoint, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!response.ok) {
+    throw new Error(`Graph content fetch failed (${response.status}): ${response.statusText}`);
+  }
+
+  const contentType = response.headers.get('content-type') || item.mimeType || '';
+  const bytes = Buffer.from(await response.arrayBuffer());
+  let text = '';
+
+  if (isUnsupportedBinary(contentType, item.name)) {
+    text = `Binary Office/PDF format is not directly extractable in this gateway. Use webUrl for external summarize flow: ${item.webUrl || 'N/A'}`;
+  } else if (isTextLike(contentType, item.name)) {
+    text = bytes.toString('utf-8');
+    if (contentType.toLowerCase().includes('html') || item.name.toLowerCase().endsWith('.html') || item.name.toLowerCase().endsWith('.htm')) {
+      text = stripHtml(text);
+    }
+  } else {
+    text = `Unsupported content type for text extraction: ${contentType || 'unknown'}`;
+  }
+
+  const normalized = text.replace(/\r\n/g, '\n').trim();
+  const capped = normalized.slice(0, Math.max(1000, maxChars));
+  return {
+    item,
+    contentType: contentType || undefined,
+    extractedText: capped,
+    extractedChars: capped.length,
+    truncated: normalized.length > capped.length,
+    source: 'graph-content',
+  };
 }
 
 // ============================================
@@ -684,6 +793,27 @@ const tools: Record<string, (params: Record<string, unknown>) => Promise<unknown
       modeRaw === 'name' || modeRaw === 'content' || modeRaw === 'both' ? modeRaw : 'both';
     const top = params.top ? parseInt(String(params.top), 10) : 20;
     return await searchFiles(query, top, mode);
+  },
+  read_file_content: async (params) => {
+    if (!isLoggedIn()) throw new Error('Not logged in');
+    const query = String(params.query || '').trim();
+    const maxChars = params.maxChars ? parseInt(String(params.maxChars), 10) : 12000;
+    let driveId = String(params.driveId || '').trim();
+    let itemId = String(params.itemId || '').trim();
+
+    if (!itemId && query) {
+      const matches = await searchFiles(query, 1, 'both');
+      if (!matches.length) throw new Error(`No files found for query: ${query}`);
+      itemId = matches[0].id;
+      driveId = matches[0].driveId || '';
+      if (!driveId) throw new Error('Top match did not include driveId. Try explicit driveId + itemId.');
+    }
+
+    if (!driveId || !itemId) {
+      throw new Error('Provide either query OR both driveId and itemId.');
+    }
+
+    return await readDriveItemText(driveId, itemId, maxChars);
   },
   get_email: async (params) => { if (!isLoggedIn()) throw new Error('Not logged in'); return await getEmailThread(params.messageId as string); },
   send_email: async (params) => { if (!isLoggedIn()) throw new Error('Not logged in'); return await sendEmail(params.to as string, params.subject as string, params.body as string, params.isDraft as boolean | undefined); },

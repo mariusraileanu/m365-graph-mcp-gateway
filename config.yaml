@@ -26,9 +26,9 @@ guardrails:
     stripSensitiveFromLogs: true
   audit:
     enabled: true
-    logPath: "/home/node/graph-mcp/audit/audit.jsonl"
+    logPath: "/home/node/m365-graph-mcp-gateway/audit/audit.jsonl"
     retentionDays: 90
 
 storage:
-  tokenPath: "/home/node/graph-mcp/tokens"
+  tokenPath: "/home/node/m365-graph-mcp-gateway/tokens"
   sessionTimeoutMinutes: 60

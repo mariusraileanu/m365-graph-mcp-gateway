@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ $# -ne 2 ]]; then
-  echo "Usage: mail-draft-reply-all <event_id> <body>"
-  exit 1
-fi
-exec /home/node/workspace/bin/graph-mcp-write draft-reply-all "$1" "$2"

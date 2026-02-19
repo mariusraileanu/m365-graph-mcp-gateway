@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ $# -ne 2 ]]; then
-  echo "Usage: calendar-read <start_iso> <end_iso>"
-  exit 1
-fi
-exec /home/node/workspace/bin/graph-mcp calendar "$1" "$2"

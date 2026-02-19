@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-if [[ $# -lt 2 || $# -gt 3 ]]; then
-  echo "Usage: calendar-free <start_iso> <end_iso> [duration_minutes]"
-  exit 1
-fi
-exec /home/node/workspace/bin/graph-mcp free "$@"
