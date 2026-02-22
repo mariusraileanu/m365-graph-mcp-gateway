@@ -11,9 +11,11 @@ services:
       - .env
     environment:
       GRAPH_MCP_CLIENT_ID: ${GRAPH_MCP_CLIENT_ID}
-      GRAPH_MCP_CLIENT_SECRET: ${GRAPH_MCP_CLIENT_SECRET}
       GRAPH_MCP_TENANT_ID: ${GRAPH_MCP_TENANT_ID}
+      HOST: "0.0.0.0"
+      PUBLIC_HOST: "http://localhost:18790"
       NODE_ENV: production
+      HOME: /home/node
     volumes:
       - ./data/m365-graph-mcp-gateway:/home/node/m365-graph-mcp-gateway:rw
     healthcheck:
