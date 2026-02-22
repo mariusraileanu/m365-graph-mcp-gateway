@@ -112,14 +112,58 @@ docker compose logs -f m365-graph-mcp-gateway
 
 ## Deploy to Azure
 
-Uses Terraform to deploy as an Azure Container App.
+### Azure Container Apps (recommended)
+
+Deploys per-user Container App instances into shared Azure infrastructure.
+Each user gets their own instance with isolated MSAL credentials and file-share-backed token persistence.
 
 ```bash
-# 1. Build and push Docker image to your registry
-docker build -t myregistry.azurecr.io/graph-mcp-gateway:latest .
-docker push myregistry.azurecr.io/graph-mcp-gateway:latest
+# 1. Create shared infra (RG, ACR, Key Vault, Storage, Container Apps Env)
+make azure-init
 
-# 2. Deploy
+# 2. Build & push image to ACR
+make azure-build
+
+# 3. Deploy for a user
+make azure-add USER=mlucian
+
+# 4. One-time device-code auth
+make azure-login USER=mlucian
+
+# 5. Check status
+make azure-status
+
+# Add more users
+make azure-add USER=alice
+make azure-login USER=alice
+
+# Update image after code changes
+make azure-build
+make azure-add USER=mlucian
+
+# Remove a user
+make azure-remove USER=mlucian
+
+# See what exists
+make azure-plan
+
+# Tear down everything
+make azure-destroy
+```
+
+Each user's agent points to their internal FQDN:
+
+```
+https://ca-graph-mcp-gw-mlucian.internal.<env>.azurecontainerapps.io/mcp
+```
+
+Run `./scripts/azure.sh help` for all commands and environment overrides.
+
+### Terraform (standalone)
+
+Creates all resources from scratch (RG, VNet, ACR, Storage, Container Apps).
+
+```bash
 export GRAPH_MCP_CLIENT_ID="your-client-id"
 export GRAPH_MCP_TENANT_ID="your-tenant-id"
 export CONTAINER_IMAGE="myregistry.azurecr.io/graph-mcp-gateway:latest"
