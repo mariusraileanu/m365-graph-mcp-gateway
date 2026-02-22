@@ -485,9 +485,9 @@ create_user() {
   log "Waiting 30s for AAD role propagation ..."
   sleep 30
 
-  # Phase 3: register storage mount, then apply full YAML spec
-  az containerapp storage set \
-    --name "$app_name" --resource-group "$RG" \
+  # Phase 3: register storage mount at environment level, then apply full YAML spec
+  az containerapp env storage set \
+    --name "$CAE" --resource-group "$RG" \
     --storage-name "${STORAGE_MOUNT_NAME}-${user}" \
     --azure-file-account-name "$STORAGE" \
     --azure-file-account-key "$skey" \
@@ -512,9 +512,9 @@ update_user() {
   local skey
   skey=$(storage_key)
 
-  # Ensure storage mount
-  az containerapp storage set \
-    --name "$app_name" --resource-group "$RG" \
+  # Ensure storage mount at environment level
+  az containerapp env storage set \
+    --name "$CAE" --resource-group "$RG" \
     --storage-name "${STORAGE_MOUNT_NAME}-${user}" \
     --azure-file-account-name "$STORAGE" \
     --azure-file-account-key "$skey" \
@@ -663,6 +663,13 @@ cmd_remove() {
     else
       warn "Container App not found (already removed?)"
     fi
+
+    # Remove environment-level storage mount
+    az containerapp env storage remove \
+      --name "$CAE" --resource-group "$RG" \
+      --storage-name "${STORAGE_MOUNT_NAME}-${user}" \
+      --yes --output none 2>/dev/null || true
+    ok "Environment storage mount removed"
 
     if resource_exists "az storage share-rm show --storage-account '$STORAGE' --resource-group '$RG' --name '$share_name'"; then
       az storage share-rm delete --storage-account "$STORAGE" --resource-group "$RG" --name "$share_name" --yes --output none
