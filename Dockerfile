@@ -27,10 +27,16 @@ COPY --from=builder /app/config.yaml ./config.yaml
 RUN mkdir -p /home/node/m365-graph-mcp-gateway/tokens /home/node/m365-graph-mcp-gateway/audit \
     && chown -R node:node /home/node/m365-graph-mcp-gateway
 
+COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
 ENV NODE_ENV=production
+ENV HOME=/home/node
 
 USER node
 
+ENTRYPOINT ["entrypoint.sh"]
+
 EXPOSE 3000
 
-CMD ["node", "dist/index.js", "--server"]
+CMD ["node", "dist/index.js"]

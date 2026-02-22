@@ -1,34 +1,48 @@
 azure:
-  clientId: "${GRAPH_MCP_CLIENT_ID}"
-  clientSecret: "${GRAPH_MCP_CLIENT_SECRET}"
-  tenantId: "${GRAPH_MCP_TENANT_ID}"
-  redirectUri: "http://localhost"
+  clientId: '${GRAPH_MCP_CLIENT_ID}'
+  tenantId: '${GRAPH_MCP_TENANT_ID}'
 
 scopes:
-  - "Mail.Read"
-  - "Mail.ReadWrite"
-  - "Mail.Send"
-  - "Calendars.Read"
-  - "Calendars.Read.Shared"
-  - "Calendars.ReadWrite"
-  - "User.Read"
-  - "Files.Read.All"
-  - "Sites.Read.All"
-  - "Sites.Selected"
+  - 'Mail.Read'
+  - 'Mail.ReadWrite'
+  - 'Mail.Send'
+  - 'Calendars.Read'
+  - 'Calendars.Read.Shared'
+  - 'Calendars.ReadWrite'
+  - 'User.Read'
+  - 'Files.Read.All'
+  - 'Sites.Read.All'
+  - 'Sites.Selected'
 
 guardrails:
   email:
     allowDomains:
-      - "doh.gov.ae"
-      - "gmail.com"
-      - "outlook.com"
+      - '*.gov.ae'
     requireDraftApproval: true
     stripSensitiveFromLogs: true
   audit:
     enabled: true
-    logPath: "/home/node/m365-graph-mcp-gateway/audit/audit.jsonl"
+    logPath: '/home/node/m365-graph-mcp-gateway/audit/audit.jsonl'
     retentionDays: 90
 
+safety:
+  requireConfirmForWrites: true
+
+output:
+  defaultIncludeFull: false
+  defaultMaxChars: 4000
+  hardMaxChars: 20000
+
+search:
+  defaultTop: 10
+  maxTop: 50
+
+calendar:
+  defaultTimezone: 'Asia/Dubai'
+
+retrieval:
+  enabled: true
+  dataSource: 'sharePoint'
+
 storage:
-  tokenPath: "/home/node/m365-graph-mcp-gateway/tokens"
-  sessionTimeoutMinutes: 60
+  tokenPath: '/home/node/m365-graph-mcp-gateway/tokens'
