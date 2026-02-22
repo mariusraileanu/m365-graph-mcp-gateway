@@ -9,6 +9,9 @@ dist/
 data/**
 !data/.gitkeep
 
+# Editor / IDE
+.vscode/
+
 # Common local artifacts
 *.log
 *.sqlite
