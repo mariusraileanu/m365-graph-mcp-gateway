@@ -29,10 +29,63 @@ const IANA_TO_WINDOWS: Record<string, string> = {
   UTC: 'UTC',
 };
 
+/**
+ * Standard UTC offset in minutes for each IANA timezone.
+ * Used to convert "naive" local datetimes to UTC for the CalendarView API,
+ * which always interprets startDateTime/endDateTime as UTC.
+ * Note: these are standard (non-DST) offsets. Zones that observe DST
+ * (e.g. America/New_York) will be off by 1 hour during DST.
+ */
+const IANA_OFFSET_MINUTES: Record<string, number> = {
+  'Pacific/Honolulu': -600,
+  'America/Anchorage': -540,
+  'America/Los_Angeles': -480,
+  'America/Denver': -420,
+  'America/Chicago': -360,
+  'America/New_York': -300,
+  'America/Sao_Paulo': -180,
+  'Atlantic/Reykjavik': 0,
+  'Europe/London': 0,
+  'Europe/Paris': 60,
+  'Europe/Berlin': 60,
+  'Europe/Helsinki': 120,
+  'Europe/Moscow': 180,
+  'Europe/Istanbul': 180,
+  'Asia/Dubai': 240,
+  'Asia/Karachi': 300,
+  'Asia/Kolkata': 330,
+  'Asia/Dhaka': 360,
+  'Asia/Bangkok': 420,
+  'Asia/Shanghai': 480,
+  'Asia/Tokyo': 540,
+  'Australia/Sydney': 660,
+  'Pacific/Auckland': 720,
+  UTC: 0,
+};
+
 /** Resolve a timezone string to a Windows timezone name for the Graph API Prefer header. */
 export function resolveTimezone(tz?: string): string {
   const timezone = tz?.trim() || loadConfig().calendar.defaultTimezone;
   return IANA_TO_WINDOWS[timezone] || timezone;
+}
+
+/**
+ * Convert a "naive" local datetime string (no offset) to a UTC ISO string.
+ * The CalendarView API always interprets startDateTime/endDateTime as UTC,
+ * so we subtract the local timezone offset to get the correct UTC boundary.
+ *
+ * If the datetime already contains an offset ('+', 'Z'), it is returned as-is.
+ */
+export function localToUtc(datetime: string, tz?: string): string {
+  // If it already has timezone info, return as-is
+  if (/[Zz+]/.test(datetime) || /\d-\d{2}:\d{2}$/.test(datetime)) return datetime;
+  const timezone = tz?.trim() || loadConfig().calendar.defaultTimezone;
+  const offsetMinutes = IANA_OFFSET_MINUTES[timezone];
+  if (offsetMinutes === undefined || offsetMinutes === 0) return datetime;
+  const local = new Date(datetime);
+  if (isNaN(local.getTime())) return datetime;
+  const utc = new Date(local.getTime() - offsetMinutes * 60_000);
+  return utc.toISOString().replace('Z', '');
 }
 
 interface AttendeeEmail {
@@ -98,7 +151,13 @@ const CALENDAR_VIEW_SELECT = [
   'bodyPreview',
 ].join(',');
 
-/** Fetch events in a date range using the CalendarView API (expands recurring events). */
+/** Fetch events in a date range using the CalendarView API (expands recurring events).
+ *
+ * The Graph CalendarView API always interprets startDateTime/endDateTime as UTC.
+ * If the caller passes naive (no-offset) local datetimes, we convert them to UTC
+ * using the configured timezone offset so the query covers the correct local day.
+ * The Prefer header still requests event times in the local timezone for display.
+ */
 export async function calendarView(
   startDateTime: string,
   endDateTime: string,
@@ -106,10 +165,12 @@ export async function calendarView(
   timezone?: string,
 ): Promise<Record<string, unknown>[]> {
   const windowsTz = resolveTimezone(timezone);
+  const utcStart = localToUtc(startDateTime, timezone);
+  const utcEnd = localToUtc(endDateTime, timezone);
   const response = await getGraph()
     .api('/me/calendarView')
     .header('Prefer', `outlook.timezone="${windowsTz}"`)
-    .query({ startDateTime, endDateTime })
+    .query({ startDateTime: utcStart, endDateTime: utcEnd })
     .select(CALENDAR_VIEW_SELECT)
     .top(top)
     .orderby('start/dateTime')
