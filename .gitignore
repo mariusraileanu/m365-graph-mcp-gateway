@@ -18,8 +18,3 @@ data/**
 *.tar.gz
 coverage/
 node_modules/
-
-# Terraform
-infra/.terraform/
-infra/*.tfstate*
-infra/terraform.tfvars

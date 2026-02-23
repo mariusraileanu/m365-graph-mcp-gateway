@@ -45,7 +45,7 @@ src/
     log.ts            Structured JSON logger
   public/index.html Web auth UI
   index.ts          Entry point: CLI args, main(), signal handlers
-infra/              Terraform for Azure Container Apps
+scripts/            Azure deployment automation (azure.sh)
 ```
 
 Transport: `POST /mcp` (HTTP), `GET /health`, or stdin/stdout (stdio mode).
@@ -65,6 +65,7 @@ The project uses `"type": "module"` with ES2022 target. All local imports use `.
 ### Tool response shape
 
 All tool responses follow a two-part contract (see `docs/TOOL_CONTRACT.md`):
+
 - `content` — human-readable summary text
 - `structuredContent` — machine-parseable payload
 - `isError: true` only on failures
