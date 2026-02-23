@@ -1,8 +1,0 @@
-project             = "graph-mcp-gw"
-location            = "uaenorth"
-environment         = "prod"
-graph_mcp_client_id = ""  # Set via TF_VAR_graph_mcp_client_id or -var
-graph_mcp_tenant_id = ""  # Set via TF_VAR_graph_mcp_tenant_id or -var
-container_image     = ""  # e.g., acrgraphmcpgwprod.azurecr.io/graph-mcp-gateway:latest
-users               = ["alice", "bob"]  # One container per user
-vnet_address_space  = "10.0.0.0/16"

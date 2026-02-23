@@ -159,19 +159,6 @@ https://ca-graph-mcp-gw-mlucian.internal.<env>.azurecontainerapps.io/mcp
 
 Run `./scripts/azure.sh help` for all commands and environment overrides.
 
-### Terraform (standalone)
-
-Creates all resources from scratch (RG, VNet, ACR, Storage, Container Apps).
-
-```bash
-export GRAPH_MCP_CLIENT_ID="your-client-id"
-export GRAPH_MCP_TENANT_ID="your-tenant-id"
-export CONTAINER_IMAGE="myregistry.azurecr.io/graph-mcp-gateway:latest"
-bash scripts/deploy.sh
-```
-
-See `infra/terraform.tfvars.example` for all Terraform variables.
-
 ## Project Structure
 
 ```
@@ -184,7 +171,6 @@ src/
   utils/        Helpers, audit logger, types, structured logging
   public/       Web auth UI
   index.ts      Entry point
-infra/          Terraform for Azure Container Apps
 scripts/        Deploy and test scripts
 ```
 

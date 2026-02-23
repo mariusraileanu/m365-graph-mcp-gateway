@@ -25,7 +25,7 @@ src/mcp/          HTTP + stdio MCP JSON-RPC server
 src/tools/        MCP tool definitions
 src/utils/        Helpers, audit, types, structured logging
 src/public/       Web auth UI
-infra/            Terraform for Azure Container Apps
+scripts/          Azure deployment automation (azure.sh)
 ```
 
 ## Build & Test
