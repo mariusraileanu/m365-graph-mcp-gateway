@@ -707,8 +707,25 @@ cmd_login() {
     was_zero=true
     log "Scaling to 1 replica for login ..."
     az containerapp update --name "$app_name" --resource-group "$RG" --min-replicas 1 --output none
-    log "Waiting for replica ..."
-    sleep 20
+  fi
+
+  # Poll for running replica (up to 120s)
+  local waited=0
+  while [ $waited -lt 120 ]; do
+    local count
+    count=$(az containerapp replica list --name "$app_name" --resource-group "$RG" \
+      --query "length(@)" -o tsv 2>/dev/null || echo "0")
+    [ "${count:-0}" -gt 0 ] && break
+    sleep 5
+    waited=$((waited + 5))
+    log "Waiting for replica ... (${waited}s)"
+  done
+  if [ $waited -ge 120 ]; then
+    # Restore scale before dying
+    if [ "$was_zero" = true ]; then
+      az containerapp update --name "$app_name" --resource-group "$RG" --min-replicas 0 --output none 2>/dev/null || true
+    fi
+    die "Timed out waiting for replica. Check: $0 logs ${user}"
   fi
 
   log "Connecting to ${app_name} — follow the device-code instructions."
