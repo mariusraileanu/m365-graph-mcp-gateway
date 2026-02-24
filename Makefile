@@ -1,6 +1,6 @@
 .PHONY: help build dev start login login-device user ci \
-       docker-build docker-up docker-down docker-logs smoke deploy \
-       azure-init azure-plan azure-build azure-add azure-remove \
+       docker-build docker-up docker-down docker-logs smoke \
+       azure-init azure-plan azure-build azure-secrets azure-add azure-remove \
        azure-login azure-status azure-logs azure-destroy
 
 help:
@@ -26,6 +26,7 @@ help:
 	@echo "  make azure-init         Create shared infra (RG, ACR, KV, etc.)"
 	@echo "  make azure-plan         Show what exists / missing"
 	@echo "  make azure-build        Build & push image to ACR"
+	@echo "  make azure-secrets      Seed Key Vault from .env"
 	@echo "  make azure-add USER=x   Deploy Container App for user"
 	@echo "  make azure-remove USER=x Remove user's Container App"
 	@echo "  make azure-login USER=x Device-code auth for user"
@@ -73,11 +74,6 @@ docker-logs:
 smoke:
 	bash scripts/test-all-tools.sh
 
-# ── Terraform (legacy) ───────────────────────────────────────────────────
-
-deploy:
-	bash scripts/deploy.sh
-
 # ── Azure Container Apps ─────────────────────────────────────────────────
 
 azure-init:
@@ -88,6 +84,9 @@ azure-plan:
 
 azure-build:
 	bash scripts/azure.sh build $(TAG)
+
+azure-secrets:
+	bash scripts/azure.sh secrets
 
 azure-add:
 	@[ -n "$(USER)" ] || (echo "Usage: make azure-add USER=mlucian" && exit 1)
