@@ -121,28 +121,31 @@ Each user gets their own instance with isolated MSAL credentials and file-share-
 # 1. Create shared infra (RG, ACR, Key Vault, Storage, Container Apps Env)
 make azure-init
 
-# 2. Build & push image to ACR
+# 2. Seed Key Vault secrets from .env
+make azure-secrets
+
+# 3. Build & push image to ACR
 make azure-build
 
-# 3. Deploy for a user
-make azure-add USER=jdoe
+# 4. Deploy for a user
+make azure-add U=jdoe
 
-# 4. One-time device-code auth
-make azure-login USER=jdoe
+# 5. One-time device-code auth
+make azure-login U=jdoe
 
-# 5. Check status
+# 6. Check status
 make azure-status
 
 # Add more users
-make azure-add USER=alice
-make azure-login USER=alice
+make azure-add U=alice
+make azure-login U=alice
 
 # Update image after code changes
 make azure-build
-make azure-add USER=jdoe
+make azure-add U=jdoe
 
 # Remove a user
-make azure-remove USER=jdoe
+make azure-remove U=jdoe
 
 # See what exists
 make azure-plan
