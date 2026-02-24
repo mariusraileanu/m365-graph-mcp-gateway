@@ -27,11 +27,11 @@ help:
 	@echo "  make azure-plan         Show what exists / missing"
 	@echo "  make azure-build        Build & push image to ACR"
 	@echo "  make azure-secrets      Seed Key Vault from .env"
-	@echo "  make azure-add USER=x   Deploy Container App for user"
-	@echo "  make azure-remove USER=x Remove user's Container App"
-	@echo "  make azure-login USER=x Device-code auth for user"
-	@echo "  make azure-status       Show all Container Apps"
-	@echo "  make azure-logs USER=x  Tail user's logs"
+	@echo "  make azure-add U=x      Deploy Container App for user"
+	@echo "  make azure-remove U=x   Remove user's Container App"
+	@echo "  make azure-login U=x    Device-code auth for user"
+	@echo "  make azure-status [U=x] Show Container Apps (all or one)"
+	@echo "  make azure-logs U=x     Tail user's logs"
 	@echo "  make azure-destroy      Delete everything"
 
 # ── Local ─────────────────────────────────────────────────────────────────
@@ -89,23 +89,23 @@ azure-secrets:
 	bash scripts/azure.sh secrets
 
 azure-add:
-	@[ -n "$(USER)" ] || (echo "Usage: make azure-add USER=mlucian" && exit 1)
-	bash scripts/azure.sh add $(USER)
+	@[ -n "$(U)" ] || (echo "Usage: make azure-add U=mlucian" && exit 1)
+	bash scripts/azure.sh add $(U)
 
 azure-remove:
-	@[ -n "$(USER)" ] || (echo "Usage: make azure-remove USER=mlucian" && exit 1)
-	bash scripts/azure.sh remove $(USER)
+	@[ -n "$(U)" ] || (echo "Usage: make azure-remove U=mlucian" && exit 1)
+	bash scripts/azure.sh remove $(U)
 
 azure-login:
-	@[ -n "$(USER)" ] || (echo "Usage: make azure-login USER=mlucian" && exit 1)
-	bash scripts/azure.sh login $(USER)
+	@[ -n "$(U)" ] || (echo "Usage: make azure-login U=mlucian" && exit 1)
+	bash scripts/azure.sh login $(U)
 
 azure-status:
-	bash scripts/azure.sh status $(USER)
+	bash scripts/azure.sh status $(U)
 
 azure-logs:
-	@[ -n "$(USER)" ] || (echo "Usage: make azure-logs USER=mlucian" && exit 1)
-	bash scripts/azure.sh logs $(USER)
+	@[ -n "$(U)" ] || (echo "Usage: make azure-logs U=mlucian" && exit 1)
+	bash scripts/azure.sh logs $(U)
 
 azure-destroy:
 	bash scripts/azure.sh destroy

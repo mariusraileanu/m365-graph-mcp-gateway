@@ -447,13 +447,12 @@ create_user() {
   local skey
   skey=$(storage_key)
 
-  # Phase 1: create with placeholder env vars (identity doesn't exist yet)
+  # Phase 1: create with default quickstart image (identity doesn't exist yet,
+  # so we can't pull from ACR or reference Key Vault secrets)
   az containerapp create \
     --name "$app_name" \
     --resource-group "$RG" \
     --environment "$CAE" \
-    --image "${server}/${IMAGE_NAME}:latest" \
-    --registry-server "$server" \
     --system-assigned \
     --target-port 3000 \
     --ingress internal \
@@ -461,13 +460,11 @@ create_user() {
     --min-replicas 0 --max-replicas 1 \
     --cpu 0.25 --memory 0.5Gi \
     --env-vars \
-      "GRAPH_MCP_CLIENT_ID=placeholder" \
-      "GRAPH_MCP_TENANT_ID=placeholder" \
       "HOST=0.0.0.0" \
       "NODE_ENV=production" \
       "PORT=3000" \
     --output none
-  ok "Container App created (phase 1)"
+  ok "Container App created (phase 1 — quickstart image)"
 
   # Phase 2: RBAC for managed identity
   local principal_id
@@ -485,7 +482,7 @@ create_user() {
   log "Waiting 30s for AAD role propagation ..."
   sleep 30
 
-  # Phase 3: register storage mount at environment level, then apply full YAML spec
+  # Phase 3: register storage mount at environment level
   az containerapp env storage set \
     --name "$CAE" --resource-group "$RG" \
     --storage-name "${STORAGE_MOUNT_NAME}-${user}" \
@@ -495,12 +492,16 @@ create_user() {
     --access-mode ReadWrite --output none
   ok "Storage mount registered"
 
-  apply_yaml "$user" "$server" "$skey"
-
+  # Phase 4: set registry to managed-identity pull (must happen before YAML
+  # update so the platform can pull the real image)
   az containerapp registry set \
     --name "$app_name" --resource-group "$RG" \
     --server "$server" --identity system \
-    --output none 2>/dev/null || true
+    --output none
+  ok "Registry set to managed-identity pull"
+
+  # Phase 5: apply full spec — real image, KV secrets, volume, probes
+  apply_yaml "$user" "$server" "$skey"
 
   print_result "$app_name"
 }
@@ -521,12 +522,13 @@ update_user() {
     --azure-file-share-name "$share_name" \
     --access-mode ReadWrite --output none 2>/dev/null || true
 
-  apply_yaml "$user" "$server" "$skey"
-
+  # Ensure registry is set before YAML update (so image can be pulled)
   az containerapp registry set \
     --name "$app_name" --resource-group "$RG" \
     --server "$server" --identity system \
     --output none 2>/dev/null || true
+
+  apply_yaml "$user" "$server" "$skey"
 
   print_result "$app_name"
 }
@@ -709,13 +711,13 @@ cmd_login() {
     az containerapp update --name "$app_name" --resource-group "$RG" --min-replicas 1 --output none
   fi
 
-  # Poll for running replica (up to 120s)
+  # Poll for a Running replica (up to 120s)
   local waited=0
   while [ $waited -lt 120 ]; do
-    local count
-    count=$(az containerapp replica list --name "$app_name" --resource-group "$RG" \
-      --query "length(@)" -o tsv 2>/dev/null || echo "0")
-    [ "${count:-0}" -gt 0 ] && break
+    local running
+    running=$(az containerapp replica list --name "$app_name" --resource-group "$RG" \
+      --query "length([?properties.runningState=='Running'])" -o tsv 2>/dev/null || echo "0")
+    [ "${running:-0}" -gt 0 ] && break
     sleep 5
     waited=$((waited + 5))
     log "Waiting for replica ... (${waited}s)"
