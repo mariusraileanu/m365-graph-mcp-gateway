@@ -17,6 +17,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
+    gosu \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /app/package*.json ./
@@ -30,8 +31,7 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 ENV NODE_ENV=production
 ENV HOME=/home/node
 
-USER node
-
+# Start as root; entrypoint.sh creates NFS dirs then drops to "node" via gosu
 ENTRYPOINT ["entrypoint.sh"]
 
 EXPOSE 3000
