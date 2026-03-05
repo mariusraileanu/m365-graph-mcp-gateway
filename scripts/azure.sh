@@ -23,7 +23,7 @@ set -euo pipefail
 # Environment overrides (all have defaults):
 #   AZURE_RESOURCE_GROUP         AZURE_CONTAINERAPPS_ENV
 #   AZURE_ACR_NAME               AZURE_KEY_VAULT_NAME
-#   AZURE_LOCATION
+#   AZURE_LAW_NAME               AZURE_LOCATION
 # ──────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -35,7 +35,7 @@ CAE="${AZURE_CONTAINERAPPS_ENV:-cae-graph-mcp-dev}"
 ACR="${AZURE_ACR_NAME:-graphmcpdevacr}"
 KV="${AZURE_KEY_VAULT_NAME:-kvgraphmcpdev}"
 LOCATION="${AZURE_LOCATION:-eastus}"
-LAW="law-graph-mcp-dev"
+LAW="${AZURE_LAW_NAME:-law-graph-mcp-dev}"
 
 # ── Naming conventions ───────────────────────────────────────────────────
 IMAGE_NAME="graph-mcp-gateway"

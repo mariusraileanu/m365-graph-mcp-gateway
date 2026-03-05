@@ -18,3 +18,7 @@ data/**
 *.tar.gz
 coverage/
 node_modules/
+
+# AI assistant config (local dev aid, not part of the project)
+AGENTS.md
+.github/copilot-instructions.md

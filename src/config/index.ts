@@ -49,7 +49,7 @@ const ConfigSchema = z.object({
     .default({}),
   calendar: z
     .object({
-      defaultTimezone: z.string().default('Asia/Dubai'),
+      defaultTimezone: z.string().default('UTC'),
     })
     .default({}),
   storage: z

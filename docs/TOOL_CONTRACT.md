@@ -199,7 +199,7 @@ Uses Copilot Retrieval API (semantic search) with automatic fallback to Graph Se
   "end_date": "2026-02-24T00:00:00",
   "top": 10,
   "elapsed_ms": 320,
-  "timezone": "Asia/Dubai",
+  "timezone": "America/New_York",
   "result_count": 3,
   "summary": "[1] Sprint Planning\n   Link: https://outlook.office365.com/owa/?itemid=...\n   Agenda: review sprint backlog...\n[2] 1:1 with Manager\n   Link: https://outlook.office365.com/owa/?itemid=...\n[3] Team Standup",
   "truncated": false,
@@ -379,20 +379,20 @@ Compose an email: draft, send, reply, or reply-all. Write operations require `co
 Schedule a meeting. Supports explicit start/end times or automatic free-slot
 finding. Supports Teams meetings and agendas. Requires `confirm=true`.
 
-| Parameter          | Type     | Required | Description                                                                                                      |
-| ------------------ | -------- | -------- | ---------------------------------------------------------------------------------------------------------------- |
-| `subject`          | string   | yes      | Meeting subject                                                                                                  |
-| `attendees`        | string[] | no       | Attendee email addresses                                                                                         |
-| `start`            | string   | no\*     | Explicit start (ISO 8601 with offset, e.g. `"2026-02-23T09:00:00+04:00"`)                                        |
-| `end`              | string   | no\*     | Explicit end (ISO 8601 with offset)                                                                              |
-| `preferred_start`  | string   | no\*     | Window start for auto free-slot finding                                                                          |
-| `preferred_end`    | string   | no\*     | Window end for auto free-slot finding                                                                            |
-| `duration_minutes` | integer  | no       | Meeting duration (1-480, default 60). Used with preferred window.                                                |
-| `timezone`         | string   | no       | IANA timezone (e.g. `"Asia/Dubai"`). Default: configured timezone (see [Timezone Handling](#timezone-handling)). |
-| `agenda`           | string   | no       | Meeting agenda text                                                                                              |
-| `teams_meeting`    | boolean  | no       | `true` to create a Teams meeting with join link                                                                  |
-| `body_html`        | string   | no       | Custom HTML body (overrides agenda)                                                                              |
-| `confirm`          | boolean  | no       | `true` to create. Without it, returns a preview.                                                                 |
+| Parameter          | Type     | Required | Description                                                                                                            |
+| ------------------ | -------- | -------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `subject`          | string   | yes      | Meeting subject                                                                                                        |
+| `attendees`        | string[] | no       | Attendee email addresses                                                                                               |
+| `start`            | string   | no\*     | Explicit start (ISO 8601 with offset, e.g. `"2026-02-23T09:00:00-05:00"`)                                              |
+| `end`              | string   | no\*     | Explicit end (ISO 8601 with offset)                                                                                    |
+| `preferred_start`  | string   | no\*     | Window start for auto free-slot finding                                                                                |
+| `preferred_end`    | string   | no\*     | Window end for auto free-slot finding                                                                                  |
+| `duration_minutes` | integer  | no       | Meeting duration (1-480, default 60). Used with preferred window.                                                      |
+| `timezone`         | string   | no       | IANA timezone (e.g. `"America/New_York"`). Default: configured timezone (see [Timezone Handling](#timezone-handling)). |
+| `agenda`           | string   | no       | Meeting agenda text                                                                                                    |
+| `teams_meeting`    | boolean  | no       | `true` to create a Teams meeting with join link                                                                        |
+| `body_html`        | string   | no       | Custom HTML body (overrides agenda)                                                                                    |
+| `confirm`          | boolean  | no       | `true` to create. Without it, returns a preview.                                                                       |
 
 \*Provide either `start` + `end` OR `preferred_start` + `preferred_end`.
 
@@ -404,10 +404,10 @@ finding. Supports Teams meetings and agendas. Requires `confirm=true`.
   "arguments": {
     "subject": "Project Sync",
     "attendees": ["bob@contoso.com", "alice@contoso.com"],
-    "preferred_start": "2026-02-23T08:00:00+04:00",
-    "preferred_end": "2026-02-23T17:00:00+04:00",
+    "preferred_start": "2026-02-23T08:00:00-05:00",
+    "preferred_end": "2026-02-23T17:00:00-05:00",
     "duration_minutes": 30,
-    "timezone": "Asia/Dubai",
+    "timezone": "America/New_York",
     "teams_meeting": true,
     "agenda": "Discuss project milestones and blockers",
     "confirm": true
@@ -624,8 +624,8 @@ List recent audit log entries. Records all write actions and blocked attempts.
   "arguments": {
     "subject": "Sync with Bob",
     "attendees": ["bob@contoso.com"],
-    "preferred_start": "2026-02-22T08:00:00+04:00",
-    "preferred_end": "2026-02-22T12:00:00+04:00",
+    "preferred_start": "2026-02-22T08:00:00-05:00",
+    "preferred_end": "2026-02-22T12:00:00-05:00",
     "duration_minutes": 30,
     "teams_meeting": true,
     "confirm": true
@@ -638,7 +638,7 @@ List recent audit log entries. Records all write actions and blocked attempts.
 ## Timezone Handling
 
 All calendar/event operations use a **configured default timezone** (currently
-`Asia/Dubai` / UTC+4). This affects:
+`America/New_York` / UTC-5). This affects:
 
 - **`find`** (date-range mode) — event times in results are returned in the
   configured timezone. The response includes a `timezone` field indicating which
@@ -649,15 +649,15 @@ All calendar/event operations use a **configured default timezone** (currently
 - **`schedule_meeting`** — when using auto free-slot finding, the `timezone`
   parameter defaults to the configured timezone. When providing explicit `start`
   and `end`, include the UTC offset in the ISO 8601 string (e.g.
-  `"2026-02-23T09:00:00+04:00"` for Asia/Dubai).
+  `"2026-02-23T09:00:00-05:00"` for America/New_York).
 
 The default timezone is set in the gateway's `config.yaml` under
-`calendar.defaultTimezone` using IANA timezone names (e.g. `Asia/Dubai`,
-`America/New_York`, `Europe/London`). The gateway maps IANA names to the Windows
+`calendar.defaultTimezone` using IANA timezone names (e.g. `America/New_York`,
+`Europe/London`, `Asia/Tokyo`). The gateway maps IANA names to the Windows
 timezone names required by the Graph API internally.
 
 **Agent guidance**: When the user says "9am" without specifying a timezone, use
-the default timezone offset. For Asia/Dubai, that means `+04:00`.
+the default timezone offset. For America/New_York, that means `-05:00`.
 
 ---
 

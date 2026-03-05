@@ -38,7 +38,7 @@ search:
   maxTop: 50
 
 calendar:
-  defaultTimezone: 'Asia/Dubai'
+  defaultTimezone: 'UTC'
 
 retrieval:
   enabled: true
