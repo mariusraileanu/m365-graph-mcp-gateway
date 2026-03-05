@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { isLoggedIn, currentUser, getGraph } from '../auth/index.js';
-import { ok, requireConfirm, sanitizeForLogs, escapeHtml, sanitizeEmailHtml } from '../utils/helpers.js';
+import { ok, requireConfirm, sanitizeForLogs, escapeHtml, sanitizeEmailHtml, checkEmailAllowed } from '../utils/helpers.js';
 import { auditLogger } from '../utils/audit.js';
 import { pickEvent, resolveTimezone } from '../graph/calendar.js';
 import type { ToolSpec } from '../utils/types.js';
@@ -30,6 +30,10 @@ export const scheduleMeetingTools: ToolSpec[] = [
       if (!isLoggedIn()) throw new Error('AUTH_REQUIRED: not logged in');
 
       const attendees = Array.isArray(params.attendees) ? params.attendees.map((x) => String(x)) : [];
+      for (const attendee of attendees) {
+        const check = checkEmailAllowed(attendee);
+        if (!check.allowed) throw new Error(`FORBIDDEN: ${check.reason}`);
+      }
       const teamsMeeting = params.teams_meeting === true;
       const agenda = typeof params.agenda === 'string' ? params.agenda.trim() : '';
       const durationMinutes = Number.parseInt(String(params.duration_minutes ?? 60), 10);

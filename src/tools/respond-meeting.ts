@@ -60,9 +60,14 @@ export const respondMeetingTools: ToolSpec[] = [
             .patch({ body: { contentType: 'HTML', content: merged } });
         }
 
+        await auditLogger.log({
+          action: 'respond_to_meeting_reply_all_draft',
+          user: currentUser() || 'unknown',
+          details: { event_id: eventId, draft_id: draftId, source_message_id: invite.id },
+          status: 'success',
+        });
         return ok('Reply-all draft created for meeting attendees.', { id: draftId, source_message_id: invite.id, is_draft: true });
       }
-
       if (action === 'cancel') {
         const comment = typeof params.comment === 'string' ? params.comment : '';
         const gate = requireConfirm('respond_to_meeting (cancel)', params, { event_id: eventId, comment });
