@@ -23,7 +23,7 @@ set -euo pipefail
 # Environment overrides (all have defaults):
 #   AZURE_RESOURCE_GROUP         AZURE_CONTAINERAPPS_ENV
 #   AZURE_ACR_NAME               AZURE_KEY_VAULT_NAME
-#   AZURE_STORAGE_ACCOUNT_NAME   AZURE_LOCATION
+#   AZURE_LOCATION
 # ──────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -34,15 +34,12 @@ RG="${AZURE_RESOURCE_GROUP:-rg-graph-mcp-dev}"
 CAE="${AZURE_CONTAINERAPPS_ENV:-cae-graph-mcp-dev}"
 ACR="${AZURE_ACR_NAME:-graphmcpdevacr}"
 KV="${AZURE_KEY_VAULT_NAME:-kvgraphmcpdev}"
-STORAGE="${AZURE_STORAGE_ACCOUNT_NAME:-graphmcpdevst}"
 LOCATION="${AZURE_LOCATION:-eastus}"
 LAW="law-graph-mcp-dev"
 
-# ── Naming conventions ───────────────────────────────────────────────────────
+# ── Naming conventions ───────────────────────────────────────────────────
 IMAGE_NAME="graph-mcp-gateway"
 APP_PREFIX="ca-graph-mcp-gw"          # → ca-graph-mcp-gw-jdoe
-SHARE_PREFIX="graph-mcp-gw"           # → graph-mcp-gw-jdoe
-STORAGE_MOUNT_NAME="gw-data"          # internal volume name in Container App
 
 # ── Key Vault secret names ───────────────────────────────────────────────────
 KV_SECRET_CLIENT_ID="graph-mcp-client-id"
@@ -88,16 +85,6 @@ acr_server() {
   echo "$_acr_server"
 }
 
-_storage_key=""
-storage_key() {
-  if [ -z "$_storage_key" ]; then
-    _storage_key=$(az storage account keys list \
-      --account-name "$STORAGE" --resource-group "$RG" \
-      --query '[0].value' -o tsv 2>/dev/null || echo "")
-  fi
-  echo "$_storage_key"
-}
-
 # ═════════════════════════════════════════════════════════════════════════════
 # PLAN — dry-run showing what exists and what's missing
 # ═════════════════════════════════════════════════════════════════════════════
@@ -116,8 +103,6 @@ cmd_plan() {
     "az acr show --name '$ACR' --resource-group '$RG'"
   check_resource "Key Vault:                 ${KV}" \
     "az keyvault show --name '$KV' --resource-group '$RG'"
-  check_resource "Storage Account:           ${STORAGE}" \
-    "az storage account show --name '$STORAGE' --resource-group '$RG'"
   check_resource "Log Analytics:             ${LAW}" \
     "az monitor log-analytics workspace show --workspace-name '$LAW' --resource-group '$RG'"
   check_resource "Container Apps Env:        ${CAE}" \
@@ -238,22 +223,7 @@ cmd_init() {
     fi
   fi
 
-  # 4. Storage Account
-  if resource_exists "az storage account show --name '$STORAGE' --resource-group '$RG'"; then
-    ok "Storage Account '${STORAGE}' exists"
-  else
-    log "Creating Storage Account '${STORAGE}' ..."
-    az storage account create \
-      --name "$STORAGE" \
-      --resource-group "$RG" \
-      --location "$LOCATION" \
-      --sku Standard_LRS \
-      --kind StorageV2 \
-      --output none
-    ok "Storage Account '${STORAGE}' created"
-  fi
-
-  # 5. Log Analytics Workspace
+  # 4. Log Analytics Workspace
   if resource_exists "az monitor log-analytics workspace show --workspace-name '$LAW' --resource-group '$RG'"; then
     ok "Log Analytics '${LAW}' exists"
   else
@@ -266,7 +236,7 @@ cmd_init() {
     ok "Log Analytics '${LAW}' created"
   fi
 
-  # 6. Container Apps Environment
+  # 5. Container Apps Environment
   if resource_exists "az containerapp env show --name '$CAE' --resource-group '$RG'"; then
     ok "Container Apps Environment '${CAE}' exists"
   else
@@ -289,7 +259,7 @@ cmd_init() {
     ok "Container Apps Environment '${CAE}' created"
   fi
 
-  # 7. Seed secrets from .env
+  # 6. Seed secrets from .env
   echo ""
   log "Seeding Key Vault secrets ..."
   cmd_secrets
@@ -380,8 +350,7 @@ cmd_add() {
     "az group show --name '$RG'" \
     "az containerapp env show --name '$CAE' --resource-group '$RG'" \
     "az acr show --name '$ACR' --resource-group '$RG'" \
-    "az keyvault show --name '$KV' --resource-group '$RG'" \
-    "az storage account show --name '$STORAGE' --resource-group '$RG'"; do
+    "az keyvault show --name '$KV' --resource-group '$RG'"; do
     if ! resource_exists "$check"; then
       die "Shared infrastructure incomplete. Run: $0 init"
     fi
@@ -414,21 +383,9 @@ cmd_add() {
 deploy_user() {
   local user="$1" server="$2"
   local app_name="${APP_PREFIX}-${user}"
-  local share_name="${SHARE_PREFIX}-${user}"
 
   echo ""
   log "═══ ${app_name} ═══"
-
-  # File share
-  if resource_exists "az storage share-rm show --storage-account '$STORAGE' --resource-group '$RG' --name '$share_name'"; then
-    ok "File share '${share_name}' exists"
-  else
-    log "Creating file share '${share_name}' ..."
-    az storage share-rm create \
-      --storage-account "$STORAGE" --resource-group "$RG" \
-      --name "$share_name" --quota 1 --output none
-    ok "File share '${share_name}' created (1 GiB)"
-  fi
 
   # Container App
   if resource_exists "az containerapp show --name '$app_name' --resource-group '$RG'"; then
@@ -443,9 +400,6 @@ deploy_user() {
 create_user() {
   local user="$1" server="$2"
   local app_name="${APP_PREFIX}-${user}"
-  local share_name="${SHARE_PREFIX}-${user}"
-  local skey
-  skey=$(storage_key)
 
   # Phase 1: create with default quickstart image (identity doesn't exist yet,
   # so we can't pull from ACR or reference Key Vault secrets)
@@ -457,7 +411,7 @@ create_user() {
     --target-port 3000 \
     --ingress internal \
     --transport http \
-    --min-replicas 0 --max-replicas 1 \
+    --min-replicas 1 --max-replicas 1 \
     --cpu 0.25 --memory 0.5Gi \
     --env-vars \
       "HOST=0.0.0.0" \
@@ -482,17 +436,7 @@ create_user() {
   log "Waiting 30s for AAD role propagation ..."
   sleep 30
 
-  # Phase 3: register storage mount at environment level
-  az containerapp env storage set \
-    --name "$CAE" --resource-group "$RG" \
-    --storage-name "${STORAGE_MOUNT_NAME}-${user}" \
-    --azure-file-account-name "$STORAGE" \
-    --azure-file-account-key "$skey" \
-    --azure-file-share-name "$share_name" \
-    --access-mode ReadWrite --output none
-  ok "Storage mount registered"
-
-  # Phase 4: set registry to managed-identity pull (must happen before YAML
+  # Phase 3: set registry to managed-identity pull (must happen before YAML
   # update so the platform can pull the real image)
   az containerapp registry set \
     --name "$app_name" --resource-group "$RG" \
@@ -500,8 +444,8 @@ create_user() {
     --output none
   ok "Registry set to managed-identity pull"
 
-  # Phase 5: apply full spec — real image, KV secrets, volume, probes
-  apply_yaml "$user" "$server" "$skey"
+  # Phase 4: apply full spec — real image, KV secrets, NFS volume, probes
+  apply_yaml "$user" "$server"
 
   print_result "$app_name"
 }
@@ -509,18 +453,6 @@ create_user() {
 update_user() {
   local user="$1" server="$2"
   local app_name="${APP_PREFIX}-${user}"
-  local share_name="${SHARE_PREFIX}-${user}"
-  local skey
-  skey=$(storage_key)
-
-  # Ensure storage mount at environment level
-  az containerapp env storage set \
-    --name "$CAE" --resource-group "$RG" \
-    --storage-name "${STORAGE_MOUNT_NAME}-${user}" \
-    --azure-file-account-name "$STORAGE" \
-    --azure-file-account-key "$skey" \
-    --azure-file-share-name "$share_name" \
-    --access-mode ReadWrite --output none 2>/dev/null || true
 
   # Ensure registry is set before YAML update (so image can be pulled)
   az containerapp registry set \
@@ -528,7 +460,7 @@ update_user() {
     --server "$server" --identity system \
     --output none 2>/dev/null || true
 
-  apply_yaml "$user" "$server" "$skey"
+  apply_yaml "$user" "$server"
 
   print_result "$app_name"
 }
@@ -545,12 +477,14 @@ grant_role() {
 }
 
 apply_yaml() {
-  local user="$1" server="$2" skey="$3"
+  local user="$1" server="$2"
   local app_name="${APP_PREFIX}-${user}"
   local kv_uri="https://${KV}.vault.azure.net"
 
   local yaml_file
-  yaml_file=$(mktemp /tmp/ca-XXXXXX.yaml)
+  yaml_file=$(mktemp /tmp/ca-XXXXXX)
+  mv "$yaml_file" "${yaml_file}.yaml"
+  yaml_file="${yaml_file}.yaml"
 
   cat > "$yaml_file" <<YAML
 properties:
@@ -560,7 +494,7 @@ properties:
       external: false
       targetPort: 3000
       transport: http
-      allowInsecure: false
+      allowInsecure: true
     registries:
       - server: ${server}
         identity: system
@@ -571,8 +505,6 @@ properties:
       - name: tenant-id
         keyVaultUrl: ${kv_uri}/secrets/${KV_SECRET_TENANT_ID}
         identity: system
-      - name: storage-key
-        value: "${skey}"
   template:
     containers:
       - name: ${app_name}
@@ -591,9 +523,11 @@ properties:
             value: "production"
           - name: PORT
             value: "3000"
+          - name: USER_SLUG
+            value: "${user}"
         volumeMounts:
-          - volumeName: ${STORAGE_MOUNT_NAME}
-            mountPath: /home/node/m365-graph-mcp-gateway
+          - volumeName: data
+            mountPath: /app/data
         probes:
           - type: Liveness
             httpGet:
@@ -617,11 +551,11 @@ properties:
             periodSeconds: 10
             failureThreshold: 3
     volumes:
-      - name: ${STORAGE_MOUNT_NAME}
-        storageType: AzureFile
-        storageName: ${STORAGE_MOUNT_NAME}-${user}
+      - name: data
+        storageType: NfsAzureFile
+        storageName: graph-mcp-nfs
     scale:
-      minReplicas: 0
+      minReplicas: 1
       maxReplicas: 1
 YAML
 
@@ -629,7 +563,7 @@ YAML
     --name "$app_name" --resource-group "$RG" \
     --yaml "$yaml_file" --output none
   rm -f "$yaml_file"
-  ok "YAML spec applied (KV refs, volume, probes)"
+  ok "YAML spec applied (KV refs, NFS volume, probes)"
 }
 
 print_result() {
@@ -655,7 +589,6 @@ cmd_remove() {
   for user in "$@"; do
     validate_user "$user"
     local app_name="${APP_PREFIX}-${user}"
-    local share_name="${SHARE_PREFIX}-${user}"
     echo ""
     log "═══ Removing: ${app_name} ═══"
 
@@ -665,23 +598,10 @@ cmd_remove() {
     else
       warn "Container App not found (already removed?)"
     fi
-
-    # Remove environment-level storage mount
-    az containerapp env storage remove \
-      --name "$CAE" --resource-group "$RG" \
-      --storage-name "${STORAGE_MOUNT_NAME}-${user}" \
-      --yes --output none 2>/dev/null || true
-    ok "Environment storage mount removed"
-
-    if resource_exists "az storage share-rm show --storage-account '$STORAGE' --resource-group '$RG' --name '$share_name'"; then
-      az storage share-rm delete --storage-account "$STORAGE" --resource-group "$RG" --name "$share_name" --yes --output none
-      ok "File share deleted"
-    else
-      warn "File share not found (already removed?)"
-    fi
   done
   echo ""
   ok "Remove complete"
+  warn "User data remains on the NFS share under graph-mcp-data/<user>/graph-mcp/"
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -848,7 +768,7 @@ case "$ACTION" in
 Usage: $0 <command> [args]
 
 Infrastructure:
-  init                     Create shared infra (RG, ACR, KV, Storage, CAE)
+  init                     Create shared infra (RG, ACR, KV, CAE)
   plan                     Show what exists / what's missing
   destroy                  Delete entire resource group (everything)
   destroy-infra            Delete CAE + Log Analytics only
@@ -859,7 +779,7 @@ Image:
 
 Users:
   add <user> [user...]     Deploy per-user Container Apps
-  remove <user> [user...]  Delete per-user Container Apps + file shares
+  remove <user> [user...]  Delete per-user Container Apps (data preserved on NFS)
   login <user>             Device-code MSAL auth (one-time per user)
   status [user]            Show Container App status
   logs <user>              Tail container logs
@@ -879,7 +799,6 @@ Environment overrides:
   AZURE_CONTAINERAPPS_ENV      (${CAE})
   AZURE_ACR_NAME               (${ACR})
   AZURE_KEY_VAULT_NAME         (${KV})
-  AZURE_STORAGE_ACCOUNT_NAME   (${STORAGE})
   AZURE_LOCATION               (${LOCATION})
 EOF
     ;;

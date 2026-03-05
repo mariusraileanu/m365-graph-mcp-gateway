@@ -4,17 +4,17 @@ import { loadConfig } from '../config/index.js';
 import type { Json, ToolSuccess, ToolFailure, ToolResult } from './types.js';
 
 export function resolveStoragePath(configPath: string): string {
-  if (path.isAbsolute(configPath)) {
-    if (configPath.startsWith('/home/node/') && !fs.existsSync('/home/node')) {
-      const tail = configPath.replace('/home/node/', '');
-      return path.resolve(process.cwd(), 'data', tail);
-    }
-    return configPath;
+  const userSlug = process.env.USER_SLUG;
+  // Azure: NFS share mounted at /app/data, scoped by USER_SLUG
+  if (userSlug && fs.existsSync('/app/data')) {
+    return path.resolve('/app/data', userSlug, configPath);
   }
+  // Docker / bare container: /app exists but no USER_SLUG
   if (fs.existsSync('/app')) {
     return path.resolve('/app', configPath);
   }
-  return path.resolve(process.cwd(), configPath);
+  // Local dev
+  return path.resolve(process.cwd(), 'data', configPath);
 }
 
 export function sanitizeForLogs(content: string): string {

@@ -1,6 +1,9 @@
-import { describe, it } from 'node:test';
+import { describe, it, mock, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'fs';
+import path from 'path';
 import {
+  resolveStoragePath,
   parseRecipients,
   checkEmailAllowed,
   compactText,
@@ -10,6 +13,64 @@ import {
   sanitizeEmailHtml,
   collectCitations,
 } from './helpers.js';
+
+describe('resolveStoragePath', () => {
+  let existsSyncMock: ReturnType<typeof mock.method<typeof fs, 'existsSync'>>;
+  const originalUserSlug = process.env.USER_SLUG;
+
+  beforeEach(() => {
+    existsSyncMock = mock.method(fs, 'existsSync');
+    delete process.env.USER_SLUG;
+  });
+
+  afterEach(() => {
+    existsSyncMock.mock.restore();
+    if (originalUserSlug !== undefined) {
+      process.env.USER_SLUG = originalUserSlug;
+    } else {
+      delete process.env.USER_SLUG;
+    }
+  });
+
+  it('resolves to /app/data/<slug>/<path> when USER_SLUG set and /app/data exists', () => {
+    process.env.USER_SLUG = 'jdoe';
+    existsSyncMock.mock.mockImplementation((p: fs.PathLike) => String(p) === '/app/data');
+    const result = resolveStoragePath('graph-mcp/tokens');
+    assert.equal(result, '/app/data/jdoe/graph-mcp/tokens');
+  });
+
+  it('resolves to /app/<path> when /app exists but no USER_SLUG', () => {
+    existsSyncMock.mock.mockImplementation((p: fs.PathLike) => {
+      const s = String(p);
+      return s === '/app';
+    });
+    const result = resolveStoragePath('graph-mcp/tokens');
+    assert.equal(result, '/app/graph-mcp/tokens');
+  });
+
+  it('resolves to cwd/data/<path> for local dev (no /app, no USER_SLUG)', () => {
+    existsSyncMock.mock.mockImplementation(() => false);
+    const result = resolveStoragePath('graph-mcp/tokens');
+    assert.equal(result, path.resolve(process.cwd(), 'data', 'graph-mcp/tokens'));
+  });
+
+  it('falls through to /app when USER_SLUG set but /app/data missing', () => {
+    process.env.USER_SLUG = 'jdoe';
+    existsSyncMock.mock.mockImplementation((p: fs.PathLike) => {
+      const s = String(p);
+      return s === '/app'; // /app/data doesn't exist, but /app does
+    });
+    const result = resolveStoragePath('graph-mcp/tokens');
+    assert.equal(result, '/app/graph-mcp/tokens');
+  });
+
+  it('handles nested audit path correctly', () => {
+    process.env.USER_SLUG = 'anotheruser';
+    existsSyncMock.mock.mockImplementation((p: fs.PathLike) => String(p) === '/app/data');
+    const result = resolveStoragePath('graph-mcp/audit/audit.jsonl');
+    assert.equal(result, '/app/data/anotheruser/graph-mcp/audit/audit.jsonl');
+  });
+});
 
 describe('parseRecipients', () => {
   it('parses comma-separated string', () => {

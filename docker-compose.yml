@@ -6,20 +6,21 @@ services:
     container_name: m365-graph-mcp-gateway
     restart: unless-stopped
     ports:
-      - "127.0.0.1:18790:3000"
+      - '127.0.0.1:18790:3000'
     env_file:
       - .env
     environment:
       GRAPH_MCP_CLIENT_ID: ${GRAPH_MCP_CLIENT_ID}
       GRAPH_MCP_TENANT_ID: ${GRAPH_MCP_TENANT_ID}
-      HOST: "0.0.0.0"
-      PUBLIC_HOST: "http://localhost:18790"
+      HOST: '0.0.0.0'
+      PUBLIC_HOST: 'http://localhost:18790'
       NODE_ENV: production
       HOME: /home/node
+      USER_SLUG: local
     volumes:
-      - ./data/m365-graph-mcp-gateway:/home/node/m365-graph-mcp-gateway:rw
+      - ./data:/app/data:rw
     healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/health > /dev/null || exit 1"]
+      test: ['CMD-SHELL', 'curl -fsS http://127.0.0.1:3000/health > /dev/null || exit 1']
       interval: 30s
       timeout: 5s
       retries: 5

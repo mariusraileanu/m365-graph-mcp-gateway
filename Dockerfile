@@ -24,9 +24,6 @@ COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/config.yaml ./config.yaml
 
-RUN mkdir -p /home/node/m365-graph-mcp-gateway/tokens /home/node/m365-graph-mcp-gateway/audit \
-    && chown -R node:node /home/node/m365-graph-mcp-gateway
-
 COPY scripts/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

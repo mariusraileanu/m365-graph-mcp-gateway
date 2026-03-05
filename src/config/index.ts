@@ -23,7 +23,7 @@ const ConfigSchema = z.object({
       audit: z
         .object({
           enabled: z.boolean().default(true),
-          logPath: z.string().default('./data/audit/audit.jsonl'),
+          logPath: z.string().default('graph-mcp/audit/audit.jsonl'),
           retentionDays: z.number().int().positive().default(90),
         })
         .default({}),
@@ -54,7 +54,7 @@ const ConfigSchema = z.object({
     .default({}),
   storage: z
     .object({
-      tokenPath: z.string().default('./data/tokens'),
+      tokenPath: z.string().default('graph-mcp/tokens'),
     })
     .default({}),
   retrieval: z
