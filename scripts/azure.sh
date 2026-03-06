@@ -280,6 +280,8 @@ cmd_init() {
       --sku Premium_LRS \
       --kind FileStorage \
       --enable-large-file-share \
+      --public-network-access Disabled \
+      --allow-shared-key-access false \
       --output none
     ok "Storage Account '${STORAGE_ACCOUNT}' created"
   fi
