@@ -25,6 +25,7 @@ set -euo pipefail
 #   AZURE_ACR_NAME               AZURE_KEY_VAULT_NAME
 #   AZURE_LAW_NAME               AZURE_LOCATION
 #   AZURE_STORAGE_ACCOUNT        AZURE_NFS_STORAGE_NAME
+#   AZURE_VNET_NAME              AZURE_SUBNET_NAME
 # ──────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -39,6 +40,8 @@ LOCATION="${AZURE_LOCATION:-eastus}"
 LAW="${AZURE_LAW_NAME:-law-graph-mcp-dev}"
 STORAGE_ACCOUNT="${AZURE_STORAGE_ACCOUNT:-graphmcpdevst}"
 NFS_STORAGE_NAME="${AZURE_NFS_STORAGE_NAME:-graph-mcp-nfs}"
+VNET_NAME="${AZURE_VNET_NAME:-vnet-graph-mcp-dev}"
+SUBNET_NAME="${AZURE_SUBNET_NAME:-snet-containerapps}"
 
 # ── Naming conventions ───────────────────────────────────────────────────
 IMAGE_NAME="graph-mcp-gateway"
@@ -108,6 +111,10 @@ cmd_plan() {
     "az keyvault show --name '$KV' --resource-group '$RG'"
   check_resource "Log Analytics:             ${LAW}" \
     "az monitor log-analytics workspace show --workspace-name '$LAW' --resource-group '$RG'"
+  check_resource "VNet:                      ${VNET_NAME}" \
+    "az network vnet show --name '$VNET_NAME' --resource-group '$RG'"
+  check_resource "Subnet:                    ${SUBNET_NAME}" \
+    "az network vnet subnet show --vnet-name '$VNET_NAME' --resource-group '$RG' --name '$SUBNET_NAME'"
   check_resource "Container Apps Env:        ${CAE}" \
     "az containerapp env show --name '$CAE' --resource-group '$RG'"
   check_resource "Storage Account:           ${STORAGE_ACCOUNT}" \
@@ -245,18 +252,48 @@ cmd_init() {
     ok "Log Analytics '${LAW}' created"
   fi
 
-  # 5. Container Apps Environment
+  # 5. Virtual Network + Subnet (required for NFS volume mounts in CAE)
+  if resource_exists "az network vnet show --name '$VNET_NAME' --resource-group '$RG'"; then
+    ok "VNet '${VNET_NAME}' exists"
+  else
+    log "Creating VNet '${VNET_NAME}' with subnet '${SUBNET_NAME}' ..."
+    az network vnet create \
+      --name "$VNET_NAME" \
+      --resource-group "$RG" \
+      --location "$LOCATION" \
+      --address-prefix 10.0.0.0/16 \
+      --output none
+    ok "VNet '${VNET_NAME}' created"
+  fi
+
+  if resource_exists "az network vnet subnet show --vnet-name '$VNET_NAME' --resource-group '$RG' --name '$SUBNET_NAME'"; then
+    ok "Subnet '${SUBNET_NAME}' exists"
+  else
+    log "Creating subnet '${SUBNET_NAME}' (/23 for Container Apps) ..."
+    az network vnet subnet create \
+      --name "$SUBNET_NAME" \
+      --vnet-name "$VNET_NAME" \
+      --resource-group "$RG" \
+      --address-prefix 10.0.0.0/23 \
+      --output none
+    ok "Subnet '${SUBNET_NAME}' created"
+  fi
+
+  # 6. Container Apps Environment (with custom VNet for NFS support)
   if resource_exists "az containerapp env show --name '$CAE' --resource-group '$RG'"; then
     ok "Container Apps Environment '${CAE}' exists"
   else
-    log "Creating Container Apps Environment '${CAE}' ..."
-    local law_id law_key
+    log "Creating Container Apps Environment '${CAE}' (custom VNet) ..."
+    local law_id law_key subnet_id
     law_id=$(az monitor log-analytics workspace show \
       --workspace-name "$LAW" --resource-group "$RG" \
       --query customerId -o tsv)
     law_key=$(az monitor log-analytics workspace get-shared-keys \
       --workspace-name "$LAW" --resource-group "$RG" \
       --query primarySharedKey -o tsv)
+    subnet_id=$(az network vnet subnet show \
+      --name "$SUBNET_NAME" --vnet-name "$VNET_NAME" --resource-group "$RG" \
+      --query id -o tsv)
 
     az containerapp env create \
       --name "$CAE" \
@@ -264,11 +301,12 @@ cmd_init() {
       --location "$LOCATION" \
       --logs-workspace-id "$law_id" \
       --logs-workspace-key "$law_key" \
+      --infrastructure-subnet-resource-id "$subnet_id" \
       --output none
     ok "Container Apps Environment '${CAE}' created"
   fi
 
-  # 6. NFS Storage Account (Premium FileStorage — required for NFS protocol)
+  # 7. NFS Storage Account (Premium FileStorage — required for NFS protocol)
   if resource_exists "az storage account show --name '$STORAGE_ACCOUNT' --resource-group '$RG'"; then
     ok "Storage Account '${STORAGE_ACCOUNT}' exists"
   else
@@ -286,7 +324,7 @@ cmd_init() {
     ok "Storage Account '${STORAGE_ACCOUNT}' created"
   fi
 
-  # 7. NFS File Share
+  # 8. NFS File Share
   if resource_exists "az storage share-rm show --storage-account '$STORAGE_ACCOUNT' --resource-group '$RG' --name data"; then
     ok "NFS share 'data' exists"
   else
@@ -301,7 +339,7 @@ cmd_init() {
     ok "NFS share 'data' created"
   fi
 
-  # 8. Mount NFS share to Container Apps Environment
+  # 9. Mount NFS share to Container Apps Environment
   if resource_exists "az containerapp env storage show --name '$CAE' --resource-group '$RG' --storage-name '$NFS_STORAGE_NAME'"; then
     ok "CAE storage mount '${NFS_STORAGE_NAME}' exists"
   else
