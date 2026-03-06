@@ -1,5 +1,6 @@
 .env
-.env.azure
+.env.azure*
+!.env.azure.example
 .env.bak.*
 
 # Build output

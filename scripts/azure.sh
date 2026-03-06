@@ -24,6 +24,7 @@ set -euo pipefail
 #   AZURE_RESOURCE_GROUP         AZURE_CONTAINERAPPS_ENV
 #   AZURE_ACR_NAME               AZURE_KEY_VAULT_NAME
 #   AZURE_LAW_NAME               AZURE_LOCATION
+#   AZURE_STORAGE_ACCOUNT        AZURE_NFS_STORAGE_NAME
 # ──────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -36,6 +37,8 @@ ACR="${AZURE_ACR_NAME:-graphmcpdevacr}"
 KV="${AZURE_KEY_VAULT_NAME:-kvgraphmcpdev}"
 LOCATION="${AZURE_LOCATION:-eastus}"
 LAW="${AZURE_LAW_NAME:-law-graph-mcp-dev}"
+STORAGE_ACCOUNT="${AZURE_STORAGE_ACCOUNT:-graphmcpdevst}"
+NFS_STORAGE_NAME="${AZURE_NFS_STORAGE_NAME:-graph-mcp-nfs}"
 
 # ── Naming conventions ───────────────────────────────────────────────────
 IMAGE_NAME="graph-mcp-gateway"
@@ -107,6 +110,12 @@ cmd_plan() {
     "az monitor log-analytics workspace show --workspace-name '$LAW' --resource-group '$RG'"
   check_resource "Container Apps Env:        ${CAE}" \
     "az containerapp env show --name '$CAE' --resource-group '$RG'"
+  check_resource "Storage Account:           ${STORAGE_ACCOUNT}" \
+    "az storage account show --name '$STORAGE_ACCOUNT' --resource-group '$RG'"
+  check_resource "NFS Share:                 data" \
+    "az storage share-rm show --storage-account '$STORAGE_ACCOUNT' --resource-group '$RG' --name data"
+  check_resource "CAE Storage Mount:         ${NFS_STORAGE_NAME}" \
+    "az containerapp env storage show --name '$CAE' --resource-group '$RG' --storage-name '$NFS_STORAGE_NAME'"
   echo ""
 
   echo "── Key Vault Secrets ──────────────────────────────────────"
@@ -162,7 +171,7 @@ cmd_init() {
   require_az
   echo ""
   log "═══ Initializing shared infrastructure ═══"
-  log "Location: ${LOCATION}   Resource Group: ${RG}"
+  log "Location: ${LOCATION}   Resource Group: ${RG}   Storage: ${STORAGE_ACCOUNT}"
   echo ""
 
   # 1. Resource Group
@@ -259,7 +268,55 @@ cmd_init() {
     ok "Container Apps Environment '${CAE}' created"
   fi
 
-  # 6. Seed secrets from .env
+  # 6. NFS Storage Account (Premium FileStorage — required for NFS protocol)
+  if resource_exists "az storage account show --name '$STORAGE_ACCOUNT' --resource-group '$RG'"; then
+    ok "Storage Account '${STORAGE_ACCOUNT}' exists"
+  else
+    log "Creating Storage Account '${STORAGE_ACCOUNT}' (Premium FileStorage) ..."
+    az storage account create \
+      --name "$STORAGE_ACCOUNT" \
+      --resource-group "$RG" \
+      --location "$LOCATION" \
+      --sku Premium_LRS \
+      --kind FileStorage \
+      --enable-large-file-share \
+      --output none
+    ok "Storage Account '${STORAGE_ACCOUNT}' created"
+  fi
+
+  # 7. NFS File Share
+  if resource_exists "az storage share-rm show --storage-account '$STORAGE_ACCOUNT' --resource-group '$RG' --name data"; then
+    ok "NFS share 'data' exists"
+  else
+    log "Creating NFS file share 'data' (100 GiB) ..."
+    az storage share-rm create \
+      --storage-account "$STORAGE_ACCOUNT" \
+      --resource-group "$RG" \
+      --name data \
+      --enabled-protocols NFS \
+      --quota 100 \
+      --output none
+    ok "NFS share 'data' created"
+  fi
+
+  # 8. Mount NFS share to Container Apps Environment
+  if resource_exists "az containerapp env storage show --name '$CAE' --resource-group '$RG' --storage-name '$NFS_STORAGE_NAME'"; then
+    ok "CAE storage mount '${NFS_STORAGE_NAME}' exists"
+  else
+    log "Mounting NFS share to Container Apps Environment as '${NFS_STORAGE_NAME}' ..."
+    az containerapp env storage set \
+      --name "$CAE" \
+      --resource-group "$RG" \
+      --storage-name "$NFS_STORAGE_NAME" \
+      --storage-type NfsAzureFile \
+      --server "${STORAGE_ACCOUNT}.file.core.windows.net" \
+      --file-share "/${STORAGE_ACCOUNT}/data" \
+      --access-mode ReadWrite \
+      --output none
+    ok "NFS share mounted as '${NFS_STORAGE_NAME}'"
+  fi
+
+  # 9. Seed secrets from .env
   echo ""
   log "Seeding Key Vault secrets ..."
   cmd_secrets
@@ -350,7 +407,8 @@ cmd_add() {
     "az group show --name '$RG'" \
     "az containerapp env show --name '$CAE' --resource-group '$RG'" \
     "az acr show --name '$ACR' --resource-group '$RG'" \
-    "az keyvault show --name '$KV' --resource-group '$RG'"; do
+    "az keyvault show --name '$KV' --resource-group '$RG'" \
+    "az containerapp env storage show --name '$CAE' --resource-group '$RG' --storage-name '$NFS_STORAGE_NAME'"; do
     if ! resource_exists "$check"; then
       die "Shared infrastructure incomplete. Run: $0 init"
     fi
@@ -553,7 +611,7 @@ properties:
     volumes:
       - name: data
         storageType: NfsAzureFile
-        storageName: graph-mcp-nfs
+        storageName: ${NFS_STORAGE_NAME}
     scale:
       minReplicas: 1
       maxReplicas: 1
@@ -768,7 +826,7 @@ case "$ACTION" in
 Usage: $0 <command> [args]
 
 Infrastructure:
-  init                     Create shared infra (RG, ACR, KV, CAE)
+  init                     Create shared infra (RG, ACR, KV, Storage, CAE)
   plan                     Show what exists / what's missing
   destroy                  Delete entire resource group (everything)
   destroy-infra            Delete CAE + Log Analytics only
@@ -787,8 +845,8 @@ Users:
 Examples:
   $0 init                              # Create shared infra
   $0 build                             # Build image
-  $0 add jdoe                       # Deploy for jdoe
-  $0 login jdoe                     # One-time auth
+  $0 add jdoe                          # Deploy for jdoe
+  $0 login jdoe                        # One-time auth
   $0 add alice bob                     # Add more users
   $0 status                            # Show all users
   $0 remove alice                      # Remove a user
@@ -800,6 +858,9 @@ Environment overrides:
   AZURE_ACR_NAME               (${ACR})
   AZURE_KEY_VAULT_NAME         (${KV})
   AZURE_LOCATION               (${LOCATION})
+  AZURE_LAW_NAME               (${LAW})
+  AZURE_STORAGE_ACCOUNT        (${STORAGE_ACCOUNT})
+  AZURE_NFS_STORAGE_NAME       (${NFS_STORAGE_NAME})
 EOF
     ;;
   *)
