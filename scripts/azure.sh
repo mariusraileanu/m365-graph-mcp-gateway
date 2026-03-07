@@ -275,6 +275,7 @@ cmd_init() {
       --vnet-name "$VNET_NAME" \
       --resource-group "$RG" \
       --address-prefix 10.0.0.0/23 \
+      --delegations Microsoft.App/environments \
       --output none
     ok "Subnet '${SUBNET_NAME}' created"
   fi
@@ -302,6 +303,7 @@ cmd_init() {
       --logs-workspace-id "$law_id" \
       --logs-workspace-key "$law_key" \
       --infrastructure-subnet-resource-id "$subnet_id" \
+      --internal-only true \
       --output none
     ok "Container Apps Environment '${CAE}' created"
   fi
