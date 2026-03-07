@@ -121,6 +121,10 @@ cmd_plan() {
     "az storage account show --name '$STORAGE_ACCOUNT' --resource-group '$RG'"
   check_resource "NFS Share:                 data" \
     "az storage share-rm show --storage-account '$STORAGE_ACCOUNT' --resource-group '$RG' --name data"
+  check_resource "Private Endpoint:          pe-${STORAGE_ACCOUNT}" \
+    "az network private-endpoint show --name 'pe-${STORAGE_ACCOUNT}' --resource-group '$RG'"
+  check_resource "Private DNS Zone:          privatelink.file.core.windows.net" \
+    "az network private-dns zone show --name 'privatelink.file.core.windows.net' --resource-group '$RG'"
   check_resource "CAE Storage Mount:         ${NFS_STORAGE_NAME}" \
     "az containerapp env storage show --name '$CAE' --resource-group '$RG' --storage-name '$NFS_STORAGE_NAME'"
   echo ""
@@ -341,7 +345,87 @@ cmd_init() {
     ok "NFS share 'data' created"
   fi
 
-  # 9. Mount NFS share to Container Apps Environment
+  # 9. Private Endpoint for NFS storage (required when public-network-access is Disabled)
+  local pe_subnet="snet-privateendpoints"
+  local pe_name="pe-${STORAGE_ACCOUNT}"
+
+  if resource_exists "az network vnet subnet show --vnet-name '$VNET_NAME' --resource-group '$RG' --name '$pe_subnet'"; then
+    ok "Private endpoint subnet '${pe_subnet}' exists"
+  else
+    log "Creating private endpoint subnet '${pe_subnet}' ..."
+    az network vnet subnet create \
+      --name "$pe_subnet" \
+      --vnet-name "$VNET_NAME" \
+      --resource-group "$RG" \
+      --address-prefix 10.0.2.0/24 \
+      --output none
+    ok "Subnet '${pe_subnet}' created"
+  fi
+
+  if resource_exists "az network private-endpoint show --name '$pe_name' --resource-group '$RG'"; then
+    ok "Private endpoint '${pe_name}' exists"
+  else
+    log "Creating private endpoint '${pe_name}' for storage account ..."
+    local storage_id
+    storage_id=$(az storage account show --name "$STORAGE_ACCOUNT" --resource-group "$RG" --query id -o tsv)
+    az network private-endpoint create \
+      --name "$pe_name" \
+      --resource-group "$RG" \
+      --vnet-name "$VNET_NAME" \
+      --subnet "$pe_subnet" \
+      --private-connection-resource-id "$storage_id" \
+      --group-id file \
+      --connection-name "${pe_name}-conn" \
+      --output none
+    ok "Private endpoint '${pe_name}' created"
+  fi
+
+  # Private DNS zone for file.core.windows.net
+  local dns_zone="privatelink.file.core.windows.net"
+  if resource_exists "az network private-dns zone show --name '$dns_zone' --resource-group '$RG'"; then
+    ok "Private DNS zone '${dns_zone}' exists"
+  else
+    log "Creating private DNS zone '${dns_zone}' ..."
+    az network private-dns zone create \
+      --name "$dns_zone" \
+      --resource-group "$RG" \
+      --output none
+    ok "Private DNS zone '${dns_zone}' created"
+  fi
+
+  # Link DNS zone to VNet
+  local dns_link="link-${VNET_NAME}"
+  if resource_exists "az network private-dns link vnet show --zone-name '$dns_zone' --resource-group '$RG' --name '$dns_link'"; then
+    ok "DNS zone VNet link '${dns_link}' exists"
+  else
+    log "Linking DNS zone to VNet ..."
+    az network private-dns link vnet create \
+      --zone-name "$dns_zone" \
+      --resource-group "$RG" \
+      --name "$dns_link" \
+      --virtual-network "$VNET_NAME" \
+      --registration-enabled false \
+      --output none
+    ok "DNS zone linked to VNet"
+  fi
+
+  # DNS zone group on private endpoint (auto-creates A record)
+  local dns_group="default"
+  if resource_exists "az network private-endpoint dns-zone-group show --endpoint-name '$pe_name' --resource-group '$RG' --name '$dns_group'"; then
+    ok "DNS zone group on '${pe_name}' exists"
+  else
+    log "Configuring DNS zone group on private endpoint ..."
+    az network private-endpoint dns-zone-group create \
+      --endpoint-name "$pe_name" \
+      --resource-group "$RG" \
+      --name "$dns_group" \
+      --private-dns-zone "$dns_zone" \
+      --zone-name "file" \
+      --output none
+    ok "DNS zone group configured"
+  fi
+
+  # 10. Mount NFS share to Container Apps Environment
   if resource_exists "az containerapp env storage show --name '$CAE' --resource-group '$RG' --storage-name '$NFS_STORAGE_NAME'"; then
     ok "CAE storage mount '${NFS_STORAGE_NAME}' exists"
   else
