@@ -20,7 +20,8 @@ set -euo pipefail
 #   ./scripts/azure.sh destroy                  Tear down EVERYTHING (shared + users)
 #   ./scripts/azure.sh destroy-infra            Tear down shared infra only
 #
-# Environment overrides (all have defaults):
+# Environment overrides (all have defaults keyed off AZURE_ENV_LABEL):
+#   AZURE_ENV_LABEL              Environment name (dev, staging, prod)
 #   AZURE_RESOURCE_GROUP         AZURE_CONTAINERAPPS_ENV
 #   AZURE_ACR_NAME               AZURE_KEY_VAULT_NAME
 #   AZURE_LAW_NAME               AZURE_LOCATION
@@ -31,21 +32,24 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# ── Shared resource names (override via env vars) ────────────────────────────
-RG="${AZURE_RESOURCE_GROUP:-rg-graph-mcp-dev}"
-CAE="${AZURE_CONTAINERAPPS_ENV:-cae-graph-mcp-dev}"
-ACR="${AZURE_ACR_NAME:-graphmcpdevacr}"
-KV="${AZURE_KEY_VAULT_NAME:-kvgraphmcpdev}"
-LOCATION="${AZURE_LOCATION:-eastus}"
-LAW="${AZURE_LAW_NAME:-law-graph-mcp-dev}"
-STORAGE_ACCOUNT="${AZURE_STORAGE_ACCOUNT:-graphmcpdevst}"
-NFS_STORAGE_NAME="${AZURE_NFS_STORAGE_NAME:-graph-mcp-nfs}"
-VNET_NAME="${AZURE_VNET_NAME:-vnet-graph-mcp-dev}"
-SUBNET_NAME="${AZURE_SUBNET_NAME:-snet-containerapps}"
+# ── Environment label (dev, staging, prod) ────────────────────────────────
+ENV_LABEL="${AZURE_ENV_LABEL:-dev}"
 
-# ── Naming conventions ───────────────────────────────────────────────────
+# ── Shared resource names (override via env vars) ────────────────────────────
+RG="${AZURE_RESOURCE_GROUP:-rg-graph-mcp-${ENV_LABEL}}"
+CAE="${AZURE_CONTAINERAPPS_ENV:-cae-graph-mcp-${ENV_LABEL}}"
+ACR="${AZURE_ACR_NAME:-graphmcp${ENV_LABEL}acr}"
+KV="${AZURE_KEY_VAULT_NAME:-kvgraphmcp${ENV_LABEL}}"
+LOCATION="${AZURE_LOCATION:-eastus}"
+LAW="${AZURE_LAW_NAME:-law-graph-mcp-${ENV_LABEL}}"
+STORAGE_ACCOUNT="${AZURE_STORAGE_ACCOUNT:-graphmcp${ENV_LABEL}st}"
+NFS_STORAGE_NAME="${AZURE_NFS_STORAGE_NAME:-graph-mcp-nfs-${ENV_LABEL}}"
+VNET_NAME="${AZURE_VNET_NAME:-vnet-graph-mcp-${ENV_LABEL}}"
+SUBNET_NAME="${AZURE_SUBNET_NAME:-snet-containerapps-${ENV_LABEL}}"
+
+# ── Naming conventions (derived from ENV_LABEL — not configurable) ───────
 IMAGE_NAME="graph-mcp-gateway"
-APP_PREFIX="ca-graph-mcp-gw"          # → ca-graph-mcp-gw-jdoe
+APP_PREFIX="ca-graph-mcp-gw-${ENV_LABEL}"  # → ca-graph-mcp-gw-prod-jdoe
 
 # ── Key Vault secret names ───────────────────────────────────────────────────
 KV_SECRET_CLIENT_ID="graph-mcp-client-id"
@@ -98,7 +102,7 @@ acr_server() {
 cmd_plan() {
   require_az
   echo ""
-  log "Azure deployment plan for graph-mcp-gateway"
+  log "Azure deployment plan for graph-mcp-gateway [${ENV_LABEL}]"
   log "Location: ${LOCATION}"
   echo ""
 
@@ -181,7 +185,7 @@ check_resource() {
 cmd_init() {
   require_az
   echo ""
-  log "═══ Initializing shared infrastructure ═══"
+  log "═══ Initializing shared infrastructure [${ENV_LABEL}] ═══"
   log "Location: ${LOCATION}   Resource Group: ${RG}   Storage: ${STORAGE_ACCOUNT}"
   echo ""
 
@@ -347,7 +351,7 @@ cmd_init() {
   fi
 
   # 9. Private Endpoint for NFS storage (required when public-network-access is Disabled)
-  local pe_subnet="snet-privateendpoints"
+  local pe_subnet="snet-privateendpoints-${ENV_LABEL}"
   local pe_name="pe-${STORAGE_ACCOUNT}"
 
   if resource_exists "az network vnet subnet show --vnet-name '$VNET_NAME' --resource-group '$RG' --name '$pe_subnet'"; then
@@ -576,7 +580,7 @@ deploy_user() {
   local app_name="${APP_PREFIX}-${user}"
 
   echo ""
-  log "═══ ${app_name} ═══"
+  log "═══ ${app_name} [${ENV_LABEL}] ═══"
 
   # Container App
   if resource_exists "az containerapp show --name '$app_name' --resource-group '$RG'"; then
@@ -763,7 +767,7 @@ print_result() {
   fqdn=$(az containerapp show --name "$app_name" --resource-group "$RG" \
     --query "properties.configuration.ingress.fqdn" -o tsv 2>/dev/null || echo "<pending>")
   echo ""
-  ok "${app_name}"
+  ok "${app_name} [${ENV_LABEL}]"
   echo "  FQDN:    ${fqdn}"
   echo "  MCP:     https://${fqdn}/mcp"
   echo "  Health:  https://${fqdn}/health"
@@ -781,7 +785,7 @@ cmd_remove() {
     validate_user "$user"
     local app_name="${APP_PREFIX}-${user}"
     echo ""
-    log "═══ Removing: ${app_name} ═══"
+    log "═══ Removing: ${app_name} [${ENV_LABEL}] ═══"
 
     if resource_exists "az containerapp show --name '$app_name' --resource-group '$RG'"; then
       az containerapp delete --name "$app_name" --resource-group "$RG" --yes --output none
@@ -841,7 +845,7 @@ cmd_login() {
     die "Timed out waiting for replica. Check: $0 logs ${user}"
   fi
 
-  log "Connecting to ${app_name} — follow the device-code instructions."
+  log "Connecting to ${app_name} [${ENV_LABEL}] — follow the device-code instructions."
   echo ""
   az containerapp exec \
     --name "$app_name" --resource-group "$RG" \
@@ -869,7 +873,7 @@ cmd_status() {
       --query "{Name:name, FQDN:properties.configuration.ingress.fqdn, State:properties.provisioningState, Replicas:properties.runningStatus.replicas}" \
       -o table
   else
-    log "Container Apps matching ${APP_PREFIX}-* in ${RG}:"
+    log "Container Apps matching ${APP_PREFIX}-* in ${RG} [${ENV_LABEL}]:"
     az containerapp list --resource-group "$RG" \
       --query "[?starts_with(name, '${APP_PREFIX}-')].{Name:name, FQDN:properties.configuration.ingress.fqdn, State:properties.provisioningState, Replicas:properties.runningStatus.replicas}" \
       -o table
@@ -897,7 +901,7 @@ cmd_logs() {
 cmd_destroy() {
   require_az
   echo ""
-  warn "This will DELETE the entire resource group '${RG}' and ALL resources in it."
+  warn "This will DELETE the entire resource group '${RG}' and ALL resources in it. [${ENV_LABEL}]"
   warn "This includes all Container Apps, secrets, storage, and images."
   echo ""
   read -rp "Type the resource group name to confirm: " confirm
@@ -913,7 +917,7 @@ cmd_destroy() {
 cmd_destroy_infra() {
   require_az
   echo ""
-  warn "This will delete shared infrastructure but preserve user Container Apps."
+  warn "This will delete shared infrastructure but preserve user Container Apps. [${ENV_LABEL}]"
   warn "Resources to delete: ${LAW}, ${CAE}"
   echo ""
 
@@ -986,6 +990,7 @@ Examples:
   $0 destroy                           # Nuke everything
 
 Environment overrides:
+  AZURE_ENV_LABEL                (${ENV_LABEL})  — drives default naming
   AZURE_RESOURCE_GROUP         (${RG})
   AZURE_CONTAINERAPPS_ENV      (${CAE})
   AZURE_ACR_NAME               (${ACR})
@@ -994,6 +999,12 @@ Environment overrides:
   AZURE_LAW_NAME               (${LAW})
   AZURE_STORAGE_ACCOUNT        (${STORAGE_ACCOUNT})
   AZURE_NFS_STORAGE_NAME       (${NFS_STORAGE_NAME})
+  AZURE_VNET_NAME              (${VNET_NAME})
+  AZURE_SUBNET_NAME            (${SUBNET_NAME})
+
+Derived (from ENV_LABEL):
+  APP_PREFIX                   (${APP_PREFIX})
+  NFS_STORAGE_NAME             (${NFS_STORAGE_NAME})
 EOF
     ;;
   *)
