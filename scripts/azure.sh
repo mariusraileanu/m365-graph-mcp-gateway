@@ -326,6 +326,7 @@ cmd_init() {
       --enable-large-file-share \
       --public-network-access Disabled \
       --allow-shared-key-access false \
+      --https-only false \
       --output none
     ok "Storage Account '${STORAGE_ACCOUNT}' created"
   fi
@@ -410,8 +411,14 @@ cmd_init() {
   fi
 
   # DNS zone group on private endpoint (auto-creates A record)
+  # NOTE: `dns-zone-group show` returns {} with exit 0 even when empty,
+  # so we use `list` and check for non-empty array instead.
   local dns_group="default"
-  if resource_exists "az network private-endpoint dns-zone-group show --endpoint-name '$pe_name' --resource-group '$RG' --name '$dns_group'"; then
+  local zg_count
+  zg_count=$(az network private-endpoint dns-zone-group list \
+    --endpoint-name "$pe_name" --resource-group "$RG" \
+    --query "length(@)" -o tsv 2>/dev/null || echo "0")
+  if [ "${zg_count:-0}" -gt 0 ]; then
     ok "DNS zone group on '${pe_name}' exists"
   else
     log "Configuring DNS zone group on private endpoint ..."
