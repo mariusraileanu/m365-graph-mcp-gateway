@@ -15,6 +15,9 @@ set -euo pipefail
 #   ./scripts/azure.sh add <user> [user...]     Deploy per-user Container Apps
 #   ./scripts/azure.sh remove <user> [user...]  Remove per-user instances
 #   ./scripts/azure.sh login <user>             Device-code MSAL auth
+#   ./scripts/azure.sh scale-up <user>          Scale to 1 replica
+#   ./scripts/azure.sh scale-down <user>        Scale to 0 replicas
+#   ./scripts/azure.sh smoke <user>             Remote smoke test
 #   ./scripts/azure.sh status [user]            Show deployment status
 #   ./scripts/azure.sh logs <user>              Tail container logs
 #   ./scripts/azure.sh destroy                  Tear down EVERYTHING (shared + users)
@@ -606,7 +609,7 @@ create_user() {
     --target-port 3000 \
     --ingress internal \
     --transport http \
-    --min-replicas 1 --max-replicas 1 \
+    --min-replicas 0 --max-replicas 1 \
     --cpu 0.25 --memory 0.5Gi \
     --env-vars \
       "HOST=0.0.0.0" \
@@ -750,7 +753,7 @@ properties:
         storageType: NfsAzureFile
         storageName: ${NFS_STORAGE_NAME}
     scale:
-      minReplicas: 1
+      minReplicas: 0
       maxReplicas: 1
 YAML
 
@@ -860,6 +863,121 @@ cmd_login() {
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
+# SMOKE — remote smoke test against a running user container
+# ═════════════════════════════════════════════════════════════════════════════
+
+cmd_smoke() {
+  [ $# -eq 0 ] && die "Usage: $0 smoke <user>"
+  local user="$1"
+  validate_user "$user"
+  require_az
+
+  local app_name="${APP_PREFIX}-${user}"
+  if ! resource_exists "az containerapp show --name '$app_name' --resource-group '$RG'"; then
+    die "Container App '${app_name}' not found. Run: $0 add ${user}"
+  fi
+
+  # Ensure at least one replica is running
+  local replicas
+  replicas=$(az containerapp show --name "$app_name" --resource-group "$RG" \
+    --query "properties.runningStatus.replicas" -o tsv 2>/dev/null || echo "0")
+  local was_zero=false
+
+  if [ "${replicas:-0}" = "0" ]; then
+    was_zero=true
+    log "Scaling to 1 replica for smoke test ..."
+    az containerapp update --name "$app_name" --resource-group "$RG" --min-replicas 1 --output none
+
+    local waited=0
+    while [ $waited -lt 120 ]; do
+      local running
+      running=$(az containerapp replica list --name "$app_name" --resource-group "$RG" \
+        --query "length([?properties.runningState=='Running'])" -o tsv 2>/dev/null || echo "0")
+      [ "${running:-0}" -gt 0 ] && break
+      sleep 5
+      waited=$((waited + 5))
+      log "Waiting for replica ... (${waited}s)"
+    done
+    if [ $waited -ge 120 ]; then
+      if [ "$was_zero" = true ]; then
+        az containerapp update --name "$app_name" --resource-group "$RG" --min-replicas 0 --output none 2>/dev/null || true
+      fi
+      die "Timed out waiting for replica. Check: $0 logs ${user}"
+    fi
+  fi
+
+  log "Connecting to ${app_name} [${ENV_LABEL}] for smoke test ..."
+  echo ""
+  az containerapp exec \
+    --name "$app_name" --resource-group "$RG" \
+    --command "node dist/index.js --smoke"
+  local exit_code=$?
+
+  # Restore scale-to-zero if we scaled up
+  if [ "$was_zero" = true ]; then
+    echo ""
+    log "Restoring scale-to-zero ..."
+    az containerapp update --name "$app_name" --resource-group "$RG" --min-replicas 0 --output none
+  fi
+
+  return $exit_code
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
+# SCALE — scale a user container up (1 replica) or down (0 replicas)
+# ═════════════════════════════════════════════════════════════════════════════
+
+cmd_scale() {
+  [ $# -lt 2 ] && die "Usage: $0 scale <up|down> <user>"
+  local direction="$1" user="$2"
+  validate_user "$user"
+  require_az
+
+  local app_name="${APP_PREFIX}-${user}"
+  if ! resource_exists "az containerapp show --name '$app_name' --resource-group '$RG'"; then
+    die "Container App '${app_name}' not found. Run: $0 add ${user}"
+  fi
+
+  case "$direction" in
+    up)
+      log "Scaling ${app_name} to 1 replica [${ENV_LABEL}] ..."
+      az containerapp update --name "$app_name" --resource-group "$RG" \
+        --min-replicas 1 --output none
+
+      # Poll for a Running replica (up to 120s)
+      local waited=0
+      while [ $waited -lt 120 ]; do
+        local running
+        running=$(az containerapp replica list --name "$app_name" --resource-group "$RG" \
+          --query "length([?properties.runningState=='Running'])" -o tsv 2>/dev/null || echo "0")
+        [ "${running:-0}" -gt 0 ] && break
+        sleep 5
+        waited=$((waited + 5))
+        log "Waiting for replica ... (${waited}s)"
+      done
+      if [ $waited -ge 120 ]; then
+        die "Timed out waiting for replica. Check: $0 logs ${user}"
+      fi
+
+      local fqdn
+      fqdn=$(az containerapp show --name "$app_name" --resource-group "$RG" \
+        --query "properties.configuration.ingress.fqdn" -o tsv 2>/dev/null || echo "<pending>")
+      ok "Scaled up: ${app_name} (1 replica running)"
+      echo "  FQDN: https://${fqdn}"
+      ;;
+    down)
+      log "Scaling ${app_name} to 0 replicas [${ENV_LABEL}] ..."
+      az containerapp update --name "$app_name" --resource-group "$RG" \
+        --min-replicas 0 --output none
+      ok "Scaled down: ${app_name} (0 replicas — will stop when idle)"
+      ;;
+    *)
+      die "Unknown direction '${direction}'. Use: $0 scale up <user> | $0 scale down <user>"
+      ;;
+  esac
+}
+
+# ═════════════════════════════════════════════════════════════════════════════
 # STATUS — show deployment state
 # ═════════════════════════════════════════════════════════════════════════════
 
@@ -954,6 +1072,9 @@ case "$ACTION" in
   add)           cmd_add "$@" ;;
   remove)        cmd_remove "$@" ;;
   login)         cmd_login "$@" ;;
+  scale-up)      cmd_scale up "$@" ;;
+  scale-down)    cmd_scale down "$@" ;;
+  smoke)         cmd_smoke "$@" ;;
   status)        cmd_status "$@" ;;
   logs)          cmd_logs "$@" ;;
   destroy)       cmd_destroy ;;
@@ -976,6 +1097,9 @@ Users:
   add <user> [user...]     Deploy per-user Container Apps
   remove <user> [user...]  Delete per-user Container Apps (data preserved on NFS)
   login <user>             Device-code MSAL auth (one-time per user)
+  scale-up <user>          Scale to 1 replica (start before a session)
+  scale-down <user>        Scale to 0 replicas (stop when done)
+  smoke <user>             Remote smoke test (health, tools, find)
   status [user]            Show Container App status
   logs <user>              Tail container logs
 
@@ -984,6 +1108,9 @@ Examples:
   $0 build                             # Build image
   $0 add jdoe                          # Deploy for jdoe
   $0 login jdoe                        # One-time auth
+  $0 scale-up jdoe                     # Wake container before work
+  $0 scale-down jdoe                   # Sleep container after work
+  $0 smoke jdoe                        # Run remote smoke tests
   $0 add alice bob                     # Add more users
   $0 status                            # Show all users
   $0 remove alice                      # Remove a user

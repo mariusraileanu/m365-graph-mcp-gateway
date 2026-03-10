@@ -1,8 +1,10 @@
 .PHONY: help build dev start login login-device user ci \
        docker-build docker-up docker-down docker-logs smoke \
-       deploy add-user remove-user login-user deploy-status deploy-logs deploy-plan deploy-destroy \
+       deploy add-user remove-user login-user scale-up scale-down smoke-user \
+       deploy-status deploy-logs deploy-plan deploy-destroy \
        azure-init azure-plan azure-build azure-secrets azure-add azure-remove \
-       azure-login azure-status azure-logs azure-destroy
+       azure-login azure-scale-up azure-scale-down azure-smoke \
+       azure-status azure-logs azure-destroy
 
 help:
 	@echo "m365-graph-mcp-gateway"
@@ -29,22 +31,28 @@ help:
 	@echo "  make add-user U=x ENV=dev  Deploy to dev environment"
 	@echo "  make remove-user U=x       Remove user's Container App"
 	@echo "  make login-user U=x        Device-code auth for user"
+	@echo "  make scale-up U=x          Scale to 1 replica (start session)"
+	@echo "  make scale-down U=x        Scale to 0 replicas (end session)"
+	@echo "  make smoke-user U=x        Remote smoke test (health, tools, find)"
 	@echo "  make deploy-status [U=x]   Show deployment status"
 	@echo "  make deploy-logs U=x       Tail user's logs"
 	@echo "  make deploy-plan           Dry-run: show what exists / missing"
 	@echo "  make deploy-destroy        Delete everything"
 	@echo ""
 	@echo "Azure (low-level, uses env vars or script defaults):"
-	@echo "  make azure-init         Create shared infra"
-	@echo "  make azure-plan         Show what exists / missing"
-	@echo "  make azure-build        Build & push image to ACR"
-	@echo "  make azure-secrets      Seed Key Vault from .env"
-	@echo "  make azure-add U=x      Deploy Container App for user"
-	@echo "  make azure-remove U=x   Remove user's Container App"
-	@echo "  make azure-login U=x    Device-code auth for user"
-	@echo "  make azure-status [U=x] Show Container Apps (all or one)"
-	@echo "  make azure-logs U=x     Tail user's logs"
-	@echo "  make azure-destroy      Delete everything"
+	@echo "  make azure-init            Create shared infra"
+	@echo "  make azure-plan            Show what exists / missing"
+	@echo "  make azure-build           Build & push image to ACR"
+	@echo "  make azure-secrets         Seed Key Vault from .env"
+	@echo "  make azure-add U=x         Deploy Container App for user"
+	@echo "  make azure-remove U=x      Remove user's Container App"
+	@echo "  make azure-login U=x       Device-code auth for user"
+	@echo "  make azure-scale-up U=x    Scale to 1 replica"
+	@echo "  make azure-scale-down U=x  Scale to 0 replicas"
+	@echo "  make azure-smoke U=x       Remote smoke test"
+	@echo "  make azure-status [U=x]    Show Container Apps (all or one)"
+	@echo "  make azure-logs U=x        Tail user's logs"
+	@echo "  make azure-destroy         Delete everything"
 
 # ── Local ─────────────────────────────────────────────────────────────────
 
@@ -121,6 +129,24 @@ login-user:
 	@echo "▸ Logging in user '$(U)' on [$(ENV)] using $(AZURE_ENV_FILE)"
 	set -a; . ./$(AZURE_ENV_FILE); set +a; bash scripts/azure.sh login $(U)
 
+scale-up:
+	@[ -n "$(U)" ] || { echo "Usage: make scale-up U=jdoe [ENV=prod]"; exit 1; }
+	@test -f $(AZURE_ENV_FILE) || { echo "Missing $(AZURE_ENV_FILE) — copy from .env.azure.example"; exit 1; }
+	@echo "▸ Scaling up '$(U)' on [$(ENV)] using $(AZURE_ENV_FILE)"
+	set -a; . ./$(AZURE_ENV_FILE); set +a; bash scripts/azure.sh scale-up $(U)
+
+scale-down:
+	@[ -n "$(U)" ] || { echo "Usage: make scale-down U=jdoe [ENV=prod]"; exit 1; }
+	@test -f $(AZURE_ENV_FILE) || { echo "Missing $(AZURE_ENV_FILE) — copy from .env.azure.example"; exit 1; }
+	@echo "▸ Scaling down '$(U)' on [$(ENV)] using $(AZURE_ENV_FILE)"
+	set -a; . ./$(AZURE_ENV_FILE); set +a; bash scripts/azure.sh scale-down $(U)
+
+smoke-user:
+	@[ -n "$(U)" ] || { echo "Usage: make smoke-user U=jdoe [ENV=prod]"; exit 1; }
+	@test -f $(AZURE_ENV_FILE) || { echo "Missing $(AZURE_ENV_FILE) — copy from .env.azure.example"; exit 1; }
+	@echo "▸ Smoke testing '$(U)' on [$(ENV)] using $(AZURE_ENV_FILE)"
+	set -a; . ./$(AZURE_ENV_FILE); set +a; bash scripts/azure.sh smoke $(U)
+
 deploy-status:
 	@test -f $(AZURE_ENV_FILE) || { echo "Missing $(AZURE_ENV_FILE) — copy from .env.azure.example"; exit 1; }
 	@echo "▸ Status for [$(ENV)] using $(AZURE_ENV_FILE)"
@@ -167,6 +193,18 @@ azure-remove:
 azure-login:
 	@[ -n "$(U)" ] || (echo "Usage: make azure-login U=jdoe" && exit 1)
 	bash scripts/azure.sh login $(U)
+
+azure-scale-up:
+	@[ -n "$(U)" ] || (echo "Usage: make azure-scale-up U=jdoe" && exit 1)
+	bash scripts/azure.sh scale-up $(U)
+
+azure-scale-down:
+	@[ -n "$(U)" ] || (echo "Usage: make azure-scale-down U=jdoe" && exit 1)
+	bash scripts/azure.sh scale-down $(U)
+
+azure-smoke:
+	@[ -n "$(U)" ] || (echo "Usage: make azure-smoke U=jdoe" && exit 1)
+	bash scripts/azure.sh smoke $(U)
 
 azure-status:
 	bash scripts/azure.sh status $(U)

@@ -2,10 +2,18 @@ import { loadConfig } from './config/index.js';
 import { login, logout, currentUser, isLoggedIn, loadTokenCache } from './auth/index.js';
 import { auditLogger } from './utils/audit.js';
 import { log } from './utils/log.js';
+import { runSmoke } from './utils/smoke.js';
 import { startHttpServer, startMcpStdioServer, getHttpServer } from './mcp/server.js';
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
+
+  // Smoke test runs against an already-running server — skip normal init
+  if (args.includes('--smoke')) {
+    await runSmoke();
+    return;
+  }
+
   loadConfig(); // validate config early
   await auditLogger.init();
   await loadTokenCache();
