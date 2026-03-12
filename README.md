@@ -340,7 +340,7 @@ This creates a per-user Container App named `ca-graph-mcp-gw-<env>-<user>` (e.g.
    - NFS volume mount at `/app/data`
    - Environment variables (`HOST`, `PORT`, `NODE_ENV`, `USER_SLUG`)
    - Health probes (liveness, readiness, startup)
-   - Scale rule: `minReplicas=0`, `maxReplicas=1`
+   - Scale rule: `minReplicas=1`, `maxReplicas=1`
 
 If the Container App already exists, `add-user` skips to phase 4 (YAML update) — this is how you roll out image updates.
 
@@ -420,17 +420,25 @@ All smoke tests passed!
 
 > Like `login-user`, this requires an interactive terminal.
 
-### Step 6: Daily Usage — Scale Up and Down
+### Step 6: Connect Your AI Agent
 
-Containers default to `minReplicas=0` (scale-to-zero). When scaled down, the MCP endpoint is **unreachable** — requests will fail with connection refused, not queue. You must scale up before using the gateway.
+Containers default to `minReplicas=1` (always-on). The MCP endpoint is reachable immediately after deployment. Point your AI agent's MCP config to the internal FQDN:
+
+```
+https://ca-graph-mcp-gw-prod-jdoe.internal.<env-hash>.<region>.azurecontainerapps.io/mcp
+```
+
+**Cost control**: If you want to stop paying for compute during extended absences (vacation, etc.), you can manually scale down and back up:
 
 ```bash
-# Before starting an AI session
-make scale-up U=jdoe
-
-# After the session is done
+# Stop the container (MCP endpoint becomes unreachable)
 make scale-down U=jdoe
+
+# Start it again before your next session
+make scale-up U=jdoe
 ```
+
+At 0.25 vCPU / 0.5 GiB, always-on costs approximately $15-20/month per user.
 
 `scale-up` waits for a running replica and prints the FQDN. `scale-down` sets `minReplicas=0` — the container stops when idle.
 
@@ -555,14 +563,14 @@ The CAE is created with `--internal-only true`, meaning:
 - The FQDN uses the `.internal.` subdomain
 - AI agents accessing the MCP endpoint must be on the same network (or use a VPN/private link)
 
-#### Scale-to-Zero Behavior
+#### Always-On Default
 
-Default `minReplicas=0` means:
+Containers are deployed with `minReplicas=1` (always-on) so the MCP endpoint is always reachable:
 
-- **When scaled down**: the container is stopped, no compute charges, **MCP endpoint is unreachable** (connection refused)
-- **When scaled up**: takes 15-30 seconds for the replica to start and pass health checks
-- **Tokens persist**: stored on the NFS share, survive scale-to-zero cycles and container restarts
-- **Login/smoke commands handle this automatically**: they scale up, do their work, then restore to zero
+- **Always reachable**: AI agents can call the MCP endpoint at any time without cold start delays
+- **Tokens persist**: stored on the NFS share, survive container restarts
+- **Cost**: ~$15-20/month per user at 0.25 vCPU / 0.5 GiB
+- **Manual scale-down available**: `make scale-down U=jdoe` sets `minReplicas=0` for cost savings during extended absences. `make scale-up U=jdoe` brings it back.
 
 #### Container Entrypoint
 

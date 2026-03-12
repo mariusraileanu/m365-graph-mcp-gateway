@@ -609,7 +609,7 @@ create_user() {
     --target-port 3000 \
     --ingress internal \
     --transport http \
-    --min-replicas 0 --max-replicas 1 \
+    --min-replicas 1 --max-replicas 1 \
     --cpu 0.25 --memory 0.5Gi \
     --env-vars \
       "HOST=0.0.0.0" \
@@ -753,7 +753,7 @@ properties:
         storageType: NfsAzureFile
         storageName: ${NFS_STORAGE_NAME}
     scale:
-      minReplicas: 0
+      minReplicas: 1
       maxReplicas: 1
 YAML
 
