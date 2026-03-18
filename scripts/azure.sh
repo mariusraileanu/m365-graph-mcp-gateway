@@ -594,9 +594,27 @@ cmd_add() {
   local server
   server=$(acr_server)
 
+  # Resolve the image tag — use the short git SHA so each deploy creates a
+  # genuinely new revision (`:latest` is ignored by ACA if the tag string is
+  # unchanged from the previous revision).
+  local tag
+  tag=$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || echo "latest")
+
+  # Verify that the pinned tag exists in ACR (cmd_build pushes both :latest
+  # and :<sha>).  Fall back to :latest if not found.
+  if [ "$tag" != "latest" ]; then
+    if ! az acr repository show-tags --name "$ACR" --repository "$IMAGE_NAME" \
+         --query "contains(@, '${tag}')" -o tsv 2>/dev/null | grep -qi true; then
+      warn "Tag '${tag}' not in ACR — falling back to :latest"
+      tag="latest"
+    fi
+  fi
+
+  log "Image tag: ${tag}"
+
   for user in "$@"; do
     validate_user "$user"
-    deploy_user "$user" "$server"
+    deploy_user "$user" "$server" "$tag"
   done
 
   echo ""
@@ -604,7 +622,7 @@ cmd_add() {
 }
 
 deploy_user() {
-  local user="$1" server="$2"
+  local user="$1" server="$2" tag="${3:-latest}"
   local app_name="${APP_PREFIX}-${user}"
 
   echo ""
@@ -613,15 +631,15 @@ deploy_user() {
   # Container App
   if resource_exists "az containerapp show --name '$app_name' --resource-group '$RG'"; then
     log "Container App exists — updating ..."
-    update_user "$user" "$server"
+    update_user "$user" "$server" "$tag"
   else
     log "Creating Container App ..."
-    create_user "$user" "$server"
+    create_user "$user" "$server" "$tag"
   fi
 }
 
 create_user() {
-  local user="$1" server="$2"
+  local user="$1" server="$2" tag="${3:-latest}"
   local app_name="${APP_PREFIX}-${user}"
 
   # Phase 1: create with default quickstart image (identity doesn't exist yet,
@@ -668,13 +686,13 @@ create_user() {
   ok "Registry set to managed-identity pull"
 
   # Phase 4: apply full spec — real image, KV secrets, NFS volume, probes
-  apply_yaml "$user" "$server"
+  apply_yaml "$user" "$server" "$tag"
 
   print_result "$app_name"
 }
 
 update_user() {
-  local user="$1" server="$2"
+  local user="$1" server="$2" tag="${3:-latest}"
   local app_name="${APP_PREFIX}-${user}"
 
   # Ensure registry is set before YAML update (so image can be pulled)
@@ -683,7 +701,7 @@ update_user() {
     --server "$server" --identity system \
     --output none 2>/dev/null || true
 
-  apply_yaml "$user" "$server"
+  apply_yaml "$user" "$server" "$tag"
 
   print_result "$app_name"
 }
@@ -700,7 +718,7 @@ grant_role() {
 }
 
 apply_yaml() {
-  local user="$1" server="$2"
+  local user="$1" server="$2" tag="${3:-latest}"
   local app_name="${APP_PREFIX}-${user}"
   local kv_uri="https://${KV}.vault.azure.net"
 
@@ -731,7 +749,7 @@ properties:
   template:
     containers:
       - name: ${app_name}
-        image: ${server}/${IMAGE_NAME}:latest
+        image: ${server}/${IMAGE_NAME}:${tag}
         resources:
           cpu: 0.25
           memory: 0.5Gi
