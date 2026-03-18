@@ -19,7 +19,7 @@ export const respondMeetingTools: ToolSpec[] = [
       })
       .strict(),
     run: async (params) => {
-      if (!isLoggedIn()) throw new Error('AUTH_REQUIRED: not logged in');
+      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
       const eventId = String(params.event_id).trim();
       const action = String(params.action) as 'accept' | 'decline' | 'tentativelyAccept' | 'cancel' | 'reply_all_draft';
 

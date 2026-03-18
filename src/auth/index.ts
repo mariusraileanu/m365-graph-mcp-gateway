@@ -50,13 +50,49 @@ export async function loadTokenCache(): Promise<void> {
     const cachePath = await getTokenCachePath();
     const raw = await fs.promises.readFile(cachePath, 'utf8');
     const parsed = JSON.parse(raw) as Record<string, unknown>;
-    if (parsed.account && parsed.accessToken && parsed.expiresAt) {
+
+    // Detect whether the on-disk account differs from what is already in memory
+    // (e.g. a separate login process wrote new credentials after this server started).
+    const diskAccountId = (parsed.account as AccountInfo | null)?.homeAccountId;
+    const memAccountId = tokenCache.account?.homeAccountId;
+    const accountChanged = Boolean(diskAccountId && diskAccountId !== memAccountId);
+
+    // Load each field independently so a null expiresAt (edge case) does not
+    // prevent the account from being loaded — getAccessToken() only needs the
+    // account to perform a silent MSAL refresh.
+    if (parsed.account) {
       tokenCache.account = parsed.account as AccountInfo;
+    }
+    if (parsed.accessToken) {
       tokenCache.accessToken = String(parsed.accessToken);
+    }
+    if (parsed.expiresAt != null) {
       tokenCache.expiresAt = Number(parsed.expiresAt);
     }
+
+    // When new credentials appear on disk, force MSAL to re-read its
+    // serialised cache (which contains the refresh token) on the next
+    // acquireTokenSilent() call.
+    if (accountChanged) {
+      msalHydrated = false;
+      msal = null; // drop stale instance so getMsal() creates a fresh one
+      graph = null; // graph client holds a closure over the old authProvider
+      log.info('Token cache reloaded from disk (account changed)', { user: diskAccountId });
+    }
+
+    if (!parsed.account || !parsed.accessToken) {
+      log.warn('Token cache file loaded but incomplete', {
+        hasAccount: Boolean(parsed.account),
+        hasAccessToken: Boolean(parsed.accessToken),
+        hasExpiresAt: parsed.expiresAt != null,
+      });
+    }
   } catch (err) {
-    console.warn('Failed to load token cache:', err instanceof Error ? err.message : String(err));
+    // ENOENT is expected on first run before any login
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') {
+      log.warn('Failed to load token cache', { error: err instanceof Error ? err.message : String(err) });
+    }
   }
 }
 
@@ -80,7 +116,10 @@ export function currentUser(): string | null {
   return tokenCache.account?.username ?? null;
 }
 
-export function isLoggedIn(): boolean {
+export async function isLoggedIn(): Promise<boolean> {
+  if (!tokenCache.account || !tokenCache.accessToken || !tokenCache.expiresAt) {
+    await loadTokenCache();
+  }
   return Boolean(tokenCache.account && tokenCache.accessToken && tokenCache.expiresAt);
 }
 

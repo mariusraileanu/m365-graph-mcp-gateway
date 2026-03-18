@@ -43,7 +43,7 @@ export const composeEmailTools: ToolSpec[] = [
       })
       .strict(),
     run: async (params) => {
-      if (!isLoggedIn()) throw new Error('AUTH_REQUIRED: not logged in');
+      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
       const mode = String(params.mode) as 'draft' | 'send' | 'reply' | 'reply_all';
       const bodyHtml = sanitizeEmailHtml(String(params.body_html));
 

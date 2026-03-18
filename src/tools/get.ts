@@ -11,7 +11,7 @@ export const getTools: ToolSpec[] = [
     description: 'Get a specific email by ID. Use after find to retrieve full details.',
     schema: z.object({ message_id: z.string().min(1), include_full: z.boolean().optional() }).strict(),
     run: async (params) => {
-      if (!isLoggedIn()) throw new Error('AUTH_REQUIRED: not logged in');
+      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
       const message = await getGraph()
         .api(`/me/messages/${encodeURIComponent(String(params.message_id))}`)
         .select('id,subject,from,toRecipients,ccRecipients,bodyPreview,isRead,receivedDateTime,conversationId,webLink,body')
@@ -24,7 +24,7 @@ export const getTools: ToolSpec[] = [
     description: 'Get a specific calendar event by ID. Use after find to retrieve full details.',
     schema: z.object({ event_id: z.string().min(1), include_full: z.boolean().optional() }).strict(),
     run: async (params) => {
-      if (!isLoggedIn()) throw new Error('AUTH_REQUIRED: not logged in');
+      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
       const event = await getGraph()
         .api(`/me/events/${encodeURIComponent(String(params.event_id))}`)
         .header('Prefer', `outlook.timezone="${resolveTimezone()}"`)

@@ -34,7 +34,7 @@ async function main(): Promise<void> {
     return;
   }
   if (args.includes('--user')) {
-    if (!isLoggedIn()) {
+    if (!(await isLoggedIn())) {
       log.error('Not logged in');
       process.exit(1);
     }
@@ -44,7 +44,7 @@ async function main(): Promise<void> {
 
   // For stdio mode, require pre-authentication
   if (args.includes('--stdio')) {
-    if (!isLoggedIn()) {
+    if (!(await isLoggedIn())) {
       log.error('Not logged in. Run with --login first.');
       process.exit(1);
     }
@@ -54,7 +54,7 @@ async function main(): Promise<void> {
 
   // HTTP mode: allow starting without auth (users can sign in via device-code or auth tool)
   const port = Number(process.env.PORT) || 3000;
-  if (!isLoggedIn()) {
+  if (!(await isLoggedIn())) {
     log.warn('Not logged in. Use --login-device or the auth MCP tool to sign in.');
   }
 

@@ -20,7 +20,7 @@ export const prepareMeetingTools: ToolSpec[] = [
       })
       .strict(),
     run: async (params) => {
-      if (!isLoggedIn()) throw new Error('AUTH_REQUIRED: not logged in');
+      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
 
       let meetingSubject = '';
       let meetingDetails: Record<string, unknown> | null = null;

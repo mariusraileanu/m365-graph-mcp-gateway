@@ -66,6 +66,29 @@ die()    { err "$@"; exit 1; }
 exists() { printf '\033[0;32m  ✓ exists\033[0m  %s\n' "$*"; }
 missing(){ printf '\033[0;33m  ✗ missing\033[0m %s\n' "$*"; }
 
+# Portable timeout — prefers GNU timeout/gtimeout, falls back to a perl shim
+if command -v timeout >/dev/null 2>&1; then
+  _timeout() { timeout "$@"; }
+elif command -v gtimeout >/dev/null 2>&1; then
+  _timeout() { gtimeout "$@"; }
+else
+  # Pure-bash fallback: _timeout <seconds> <cmd…>
+  _timeout() {
+    local secs="$1"; shift
+    "$@" &
+    local pid=$!
+    ( sleep "$secs"; kill "$pid" 2>/dev/null ) &
+    local watchdog=$!
+    wait "$pid" 2>/dev/null
+    local rc=$?
+    kill "$watchdog" 2>/dev/null
+    wait "$watchdog" 2>/dev/null
+    # If the process was killed by our watchdog, mimic GNU timeout exit code 124
+    if [ $rc -gt 128 ]; then rc=124; fi
+    return $rc
+  }
+fi
+
 validate_user() {
   local u="$1"
   if [[ ! "$u" =~ ^[a-z0-9][a-z0-9-]{0,19}$ ]]; then
@@ -79,7 +102,11 @@ validate_user() {
 
 require_az() {
   command -v az >/dev/null 2>&1 || die "Azure CLI required. Install: https://aka.ms/installazurecli"
-  az account show >/dev/null 2>&1 || die "Not logged in. Run: az login"
+  log "Verifying Azure CLI session …"
+  if ! az account show >/dev/null 2>&1; then
+    err "Azure CLI session expired or not logged in."
+    die "Run:  az login"
+  fi
 }
 
 # Check if a resource exists (returns 0=exists, 1=missing)
@@ -811,28 +838,46 @@ cmd_login() {
   local app_name="${APP_PREFIX}-${user}"
   require_az
 
+  log "Checking Container App '${app_name}' exists …"
   if ! resource_exists "az containerapp show --name '$app_name' --resource-group '$RG'"; then
     die "Container App '${app_name}' not found. Run: $0 add ${user}"
   fi
 
   # Wait for a Running replica (up to 120s)
+  log "Waiting for a running replica …"
   local waited=0
   while [ $waited -lt 120 ]; do
     local running
-    running=$(az containerapp replica list --name "$app_name" --resource-group "$RG" \
-      --query "length([?properties.runningState=='Running'])" -o tsv 2>/dev/null || echo "0")
+    running=$(_timeout 30 az containerapp replica list \
+      --name "$app_name" --resource-group "$RG" \
+      --query "length([?properties.runningState=='Running'])" -o tsv 2>&1 \
+      | tail -1 || echo "0")
     [ "${running:-0}" -gt 0 ] && break
     sleep 5
     waited=$((waited + 5))
-    log "Waiting for replica ... (${waited}s)"
+    log "Waiting for replica … (${waited}s)"
   done
   [ $waited -ge 120 ] && die "Timed out waiting for replica. Check: $0 logs ${user}"
 
   log "Connecting to ${app_name} [${ENV_LABEL}] — follow the device-code instructions."
+  log "(This may take 30-60 s to establish the exec tunnel …)"
   echo ""
+  # az containerapp exec requires a real TTY (it calls tty.setcbreak on stdin).
+  # Make runs recipe lines via /bin/sh -c, so stdin may not be a terminal.
+  # Reattach stdin to the real TTY so the exec tunnel can set cbreak mode.
+  # NOTE: no _timeout here — the command is interactive (user completes
+  # device-code auth in a browser) so a hard timeout is inappropriate;
+  # Ctrl+C is the correct escape hatch.
+  if [ -e /dev/tty ]; then
+    exec < /dev/tty
+  fi
   az containerapp exec \
     --name "$app_name" --resource-group "$RG" \
     --command "node dist/index.js --login-device"
+  local rc=$?
+  if [ $rc -ne 0 ]; then
+    die "az containerapp exec failed (exit $rc). Run: az containerapp exec --name '$app_name' --resource-group '$RG' --command '/bin/sh' to debug."
+  fi
 
   ok "Login complete for ${user}"
 }

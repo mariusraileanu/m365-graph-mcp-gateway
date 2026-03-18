@@ -27,7 +27,7 @@ export const scheduleMeetingTools: ToolSpec[] = [
       })
       .strict(),
     run: async (params) => {
-      if (!isLoggedIn()) throw new Error('AUTH_REQUIRED: not logged in');
+      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
 
       const attendees = Array.isArray(params.attendees) ? params.attendees.map((x) => String(x)) : [];
       for (const attendee of attendees) {

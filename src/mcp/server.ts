@@ -99,7 +99,7 @@ export function startHttpServer(port = 3000): void {
       res.writeHead(200, jsonHeaders());
       res.end(
         JSON.stringify({
-          graph: { authenticated: isLoggedIn(), user: currentUser() },
+          graph: { authenticated: await isLoggedIn(), user: currentUser() },
           retrieval: { enabled: loadConfig().retrieval.enabled, dataSource: loadConfig().retrieval.dataSource },
         }),
       );

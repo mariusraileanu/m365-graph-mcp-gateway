@@ -24,7 +24,7 @@ export const authTools: ToolSpec[] = [
       }
 
       // whoami
-      if (!isLoggedIn()) throw new Error('AUTH_REQUIRED: not logged in');
+      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
       const user = await getGraph().api('/me').select('displayName,mail,userPrincipalName,id').get();
       return ok('User profile retrieved.', {
         id: user.id,
