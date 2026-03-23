@@ -50,7 +50,7 @@ export const scheduleMeetingTools: ToolSpec[] = [
         const schedule = await getGraph()
           .api('/me/calendar/getSchedule')
           .post({
-            schedules: [currentUser() || ''],
+            schedules: [(await currentUser()) || ''],
             startTime: { dateTime: String(params.preferred_start), timeZone: tz },
             endTime: { dateTime: String(params.preferred_end), timeZone: tz },
             availabilityViewInterval: 30,
@@ -125,7 +125,7 @@ export const scheduleMeetingTools: ToolSpec[] = [
 
       await auditLogger.log({
         action: 'schedule_meeting',
-        user: currentUser() || 'unknown',
+        user: (await currentUser()) || 'unknown',
         details: {
           subject: sanitizeForLogs(String(params.subject)),
           attendeeCount: attendees.length,

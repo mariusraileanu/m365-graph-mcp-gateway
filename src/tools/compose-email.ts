@@ -64,7 +64,7 @@ export const composeEmailTools: ToolSpec[] = [
             });
           await auditLogger.log({
             action: `compose_email_${mode}_send`,
-            user: currentUser() || 'unknown',
+            user: (await currentUser()) || 'unknown',
             details: { message_id: messageId },
             status: 'success',
           });
@@ -74,7 +74,7 @@ export const composeEmailTools: ToolSpec[] = [
         const draft = await createReplyDraft(messageId, bodyHtml, mode === 'reply_all');
         await auditLogger.log({
           action: `compose_email_${mode}_draft`,
-          user: currentUser() || 'unknown',
+          user: (await currentUser()) || 'unknown',
           details: { message_id: messageId },
           status: 'success',
         });
@@ -117,7 +117,7 @@ export const composeEmailTools: ToolSpec[] = [
           });
         await auditLogger.log({
           action: 'compose_email_send',
-          user: currentUser() || 'unknown',
+          user: (await currentUser()) || 'unknown',
           details: {
             recipientCount: recipients.length,
             subject: sanitizeForLogs(String(params.subject)),
@@ -144,7 +144,7 @@ export const composeEmailTools: ToolSpec[] = [
         });
       await auditLogger.log({
         action: 'compose_email_draft',
-        user: currentUser() || 'unknown',
+        user: (await currentUser()) || 'unknown',
         details: {
           recipientCount: recipients.length,
           subject: sanitizeForLogs(String(params.subject)),

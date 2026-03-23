@@ -1,5 +1,5 @@
 import { loadConfig } from './config/index.js';
-import { login, logout, currentUser, isLoggedIn, loadTokenCache } from './auth/index.js';
+import { login, logout, currentUser, isLoggedIn } from './auth/index.js';
 import { auditLogger } from './utils/audit.js';
 import { log } from './utils/log.js';
 import { runSmoke } from './utils/smoke.js';
@@ -16,16 +16,15 @@ async function main(): Promise<void> {
 
   loadConfig(); // validate config early
   await auditLogger.init();
-  await loadTokenCache();
 
   if (args.includes('--login') || args.includes('--login-interactive')) {
     await login('interactive');
-    log.info('Logged in', { user: currentUser() || 'unknown' });
+    log.info('Logged in', { user: (await currentUser()) || 'unknown' });
     return;
   }
   if (args.includes('--login-device')) {
     await login('device');
-    log.info('Logged in', { user: currentUser() || 'unknown' });
+    log.info('Logged in', { user: (await currentUser()) || 'unknown' });
     return;
   }
   if (args.includes('--logout')) {
@@ -38,7 +37,7 @@ async function main(): Promise<void> {
       log.error('Not logged in');
       process.exit(1);
     }
-    log.info('Current user', { user: currentUser() });
+    log.info('Current user', { user: await currentUser() });
     return;
   }
 

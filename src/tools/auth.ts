@@ -15,7 +15,7 @@ export const authTools: ToolSpec[] = [
       if (action === 'login' || action === 'login_device') {
         const mode: LoginMode = action === 'login_device' ? 'device' : 'interactive';
         await login(mode);
-        return ok(`Login successful (${mode}).`, { success: true, mode, user: currentUser() });
+        return ok(`Login successful (${mode}).`, { success: true, mode, user: await currentUser() });
       }
 
       if (action === 'logout') {

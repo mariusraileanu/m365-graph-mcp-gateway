@@ -90,7 +90,7 @@ export function startHttpServer(port = 3000): void {
     // --- Health ---
     if (req.method === 'GET' && url.pathname === '/health') {
       res.writeHead(200, jsonHeaders());
-      res.end(JSON.stringify({ status: 'ok', user: currentUser(), retrieval: { enabled: loadConfig().retrieval.enabled } }));
+      res.end(JSON.stringify({ status: 'ok', user: await currentUser(), retrieval: { enabled: loadConfig().retrieval.enabled } }));
       return;
     }
 
@@ -99,7 +99,7 @@ export function startHttpServer(port = 3000): void {
       res.writeHead(200, jsonHeaders());
       res.end(
         JSON.stringify({
-          graph: { authenticated: await isLoggedIn(), user: currentUser() },
+          graph: { authenticated: await isLoggedIn(), user: await currentUser() },
           retrieval: { enabled: loadConfig().retrieval.enabled, dataSource: loadConfig().retrieval.dataSource },
         }),
       );

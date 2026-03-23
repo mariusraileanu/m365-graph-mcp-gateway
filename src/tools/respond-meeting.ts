@@ -62,7 +62,7 @@ export const respondMeetingTools: ToolSpec[] = [
 
         await auditLogger.log({
           action: 'respond_to_meeting_reply_all_draft',
-          user: currentUser() || 'unknown',
+          user: (await currentUser()) || 'unknown',
           details: { event_id: eventId, draft_id: draftId, source_message_id: invite.id },
           status: 'success',
         });
@@ -78,7 +78,7 @@ export const respondMeetingTools: ToolSpec[] = [
           .post(comment ? { comment } : {});
         await auditLogger.log({
           action: 'respond_to_meeting_cancel',
-          user: currentUser() || 'unknown',
+          user: (await currentUser()) || 'unknown',
           details: { event_id: eventId, has_comment: Boolean(comment) },
           status: 'success',
         });
@@ -95,7 +95,7 @@ export const respondMeetingTools: ToolSpec[] = [
         .post(payload);
       await auditLogger.log({
         action: 'respond_to_meeting',
-        user: currentUser() || 'unknown',
+        user: (await currentUser()) || 'unknown',
         details: { event_id: eventId, action },
         status: 'success',
       });
