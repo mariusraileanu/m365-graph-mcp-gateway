@@ -1,6 +1,8 @@
 import http from 'http';
+import crypto from 'crypto';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { currentUser, isLoggedIn } from '../auth/index.js';
+import { loadConfig } from '../config/index.js';
 import { tools, callTool } from '../tools/index.js';
 import { log } from '../utils/log.js';
 import type { MCPRequest, MCPResponse } from '../utils/types.js';
@@ -15,6 +17,27 @@ const SECURITY_HEADERS: Record<string, string> = {
 
 function jsonHeaders(): Record<string, string> {
   return { ...SECURITY_HEADERS, 'Content-Type': 'application/json' };
+}
+
+/**
+ * Validate the API key from the Authorization header.
+ * Returns true if the key is valid or if no key is configured (open access).
+ * Uses constant-time comparison to prevent timing attacks.
+ */
+function checkApiKey(req: http.IncomingMessage): boolean {
+  const expected = loadConfig().server.apiKey;
+  if (!expected) return true; // no key configured → open access
+
+  const authHeader = req.headers['authorization'] || '';
+  const provided = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
+  if (!provided) return false;
+
+  // Constant-time comparison to prevent timing attacks
+  try {
+    return crypto.timingSafeEqual(Buffer.from(expected, 'utf-8'), Buffer.from(provided, 'utf-8'));
+  } catch {
+    return false; // length mismatch
+  }
 }
 
 async function handleRequest(request: MCPRequest): Promise<MCPResponse> {
@@ -106,6 +129,13 @@ export function startHttpServer(port = 3000): void {
 
     // --- MCP JSON-RPC ---
     if (req.method === 'POST' && req.url === '/mcp') {
+      // API key check — protects the tool execution endpoint
+      if (!checkApiKey(req)) {
+        res.writeHead(401, jsonHeaders());
+        res.end(JSON.stringify({ error: 'Unauthorized: invalid or missing API key' }));
+        return;
+      }
+
       let body = '';
       let bodyBytes = 0;
 

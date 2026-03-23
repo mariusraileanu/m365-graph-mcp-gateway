@@ -42,3 +42,6 @@ calendar:
 
 storage:
   tokenPath: 'graph-mcp/tokens'
+
+server:
+  apiKey: '${GRAPH_MCP_API_KEY}'

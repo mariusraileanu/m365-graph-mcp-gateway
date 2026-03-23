@@ -46,7 +46,7 @@ async function fetchDriveItemAttachment(
 
   const token = await getAccessToken();
   const endpoint = `https://graph.microsoft.com/v1.0/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/content`;
-  const response = await fetch(endpoint, { headers: { Authorization: `Bearer ${token}` } });
+  const response = await fetch(endpoint, { headers: { Authorization: `Bearer ${token}` }, keepalive: true });
   if (!response.ok) {
     throw new Error(`UPSTREAM_ERROR: attachment fetch failed (${response.status})`);
   }

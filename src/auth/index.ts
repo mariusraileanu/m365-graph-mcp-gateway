@@ -157,20 +157,30 @@ export async function getAccessToken(): Promise<string> {
     throw new Error('AUTH_REQUIRED: not logged in, run --login first');
   }
 
-  try {
-    const response = await app.acquireTokenSilent({
-      scopes: loadConfig().scopes,
-      account,
-    });
-    return response.accessToken;
-  } catch (error) {
-    if (error instanceof InteractionRequiredAuthError) {
-      log.warn('Token expired, re-authentication required');
-      throw new Error('AUTH_EXPIRED: run --login to re-authenticate');
+  const scopes = loadConfig().scopes;
+  let lastError: unknown;
+
+  // Retry once on transient failures (network glitches, MSAL service hiccups)
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await app.acquireTokenSilent({ scopes, account });
+      return response.accessToken;
+    } catch (error) {
+      lastError = error;
+      if (error instanceof InteractionRequiredAuthError) {
+        // Non-transient — user must re-authenticate, no retry
+        log.warn('Token expired, re-authentication required');
+        throw new Error('AUTH_EXPIRED: run --login to re-authenticate');
+      }
+      if (attempt === 0) {
+        log.warn('Token refresh failed, retrying', { error: error instanceof Error ? error.message : String(error) });
+        await new Promise((r) => setTimeout(r, 500));
+      }
     }
-    log.error('Token refresh failed', { error: error instanceof Error ? error.message : String(error) });
-    throw error;
   }
+
+  log.error('Token refresh failed after retry', { error: lastError instanceof Error ? lastError.message : String(lastError) });
+  throw lastError;
 }
 
 export function getGraph(): Client {
@@ -183,6 +193,7 @@ export function getGraph(): Client {
           done(e instanceof Error ? e : new Error(String(e)), null);
         }
       },
+      fetchOptions: { keepalive: true },
     });
   }
   return graph;

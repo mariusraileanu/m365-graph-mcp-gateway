@@ -187,7 +187,7 @@ export const getTools: ToolSpec[] = [
       // Step 2: Download the file content
       const token = await getAccessToken();
       const endpoint = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/content`;
-      const response = await fetch(endpoint, { headers: { Authorization: `Bearer ${token}` } });
+      const response = await fetch(endpoint, { headers: { Authorization: `Bearer ${token}` }, keepalive: true });
       if (!response.ok) {
         throw new Error(`UPSTREAM_ERROR: file download failed (${response.status})`);
       }

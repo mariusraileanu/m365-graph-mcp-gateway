@@ -57,6 +57,11 @@ const ConfigSchema = z.object({
       tokenPath: z.string().default('graph-mcp/tokens'),
     })
     .default({}),
+  server: z
+    .object({
+      apiKey: z.string().optional(),
+    })
+    .default({}),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -67,6 +72,7 @@ export type OutputConfig = Config['output'];
 export type SearchConfig = Config['search'];
 export type CalendarConfig = Config['calendar'];
 export type StorageConfig = Config['storage'];
+export type ServerConfig = Config['server'];
 
 function expandEnvVars(value: string): string {
   return value.replace(/\$\{([^}]+)\}/g, (_, key) => {
