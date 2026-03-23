@@ -15,7 +15,7 @@
     "lint": "eslint 'src/**/*.ts'",
     "format": "prettier --write 'src/**/*.ts'",
     "format:check": "prettier --check 'src/**/*.ts'",
-    "test": "tsx --test 'src/**/*.test.ts'",
+    "test": "node --experimental-test-module-mocks --import tsx --test 'src/**/*.test.ts'",
     "ci": "npm run lint && npm run format:check && npm run build && npm run test"
   },
   "keywords": [

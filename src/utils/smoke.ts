@@ -131,12 +131,45 @@ export async function runSmoke(): Promise<void> {
   try {
     const toolsResult = await mcpCall(1, 'tools/list', {});
     assertOk('tools/list', toolsResult);
+
+    // A1: Verify exactly 8 tools are registered (summarize + prepare_meeting removed)
+    const toolsPayload = toolsResult.result as { tools?: unknown[] } | undefined;
+    const toolCount = toolsPayload?.tools?.length ?? -1;
+    if (toolCount === 8) {
+      pass(`tools/list count = ${toolCount}`);
+    } else {
+      fail(`tools/list count = ${toolCount} (expected 8)`);
+    }
   } catch (err) {
     fail('tools/list', errMsg(err));
   }
 
+  // ── removed tools return NOT_FOUND ─────────────────────
+  log('removed tools → NOT_FOUND');
+  for (const removed of ['summarize', 'prepare_meeting']) {
+    try {
+      const res = await mcpCall(100, 'tools/call', {
+        name: removed,
+        arguments: { query: 'test' },
+      });
+      if (!res.ok) {
+        const sc = (res.result as { structuredContent?: { error_code?: string } })?.structuredContent;
+        if (sc?.error_code === 'NOT_FOUND') {
+          pass(`${removed} → NOT_FOUND`);
+        } else {
+          fail(`${removed} → unexpected error`, res.raw);
+        }
+      } else {
+        fail(`${removed} → should not succeed (tool was removed)`);
+      }
+    } catch (err) {
+      fail(`${removed}`, errMsg(err));
+    }
+  }
+
   // ── auth whoami ─────────────────────────────────────────
   log('auth whoami');
+  let currentUserEmail = '';
   try {
     const authResult = await mcpCall(2, 'tools/call', {
       name: 'auth',
@@ -145,7 +178,8 @@ export async function runSmoke(): Promise<void> {
     assertOk('auth whoami', authResult);
     if (authResult.ok) {
       const content = (authResult.result as { structuredContent?: { mail?: string; user_principal_name?: string } })?.structuredContent;
-      const user = content?.mail || content?.user_principal_name || 'unknown';
+      currentUserEmail = content?.mail || content?.user_principal_name || '';
+      const user = currentUserEmail || 'unknown';
       process.stdout.write(`    User: ${user}\n`);
     }
   } catch (err) {
@@ -154,14 +188,41 @@ export async function runSmoke(): Promise<void> {
 
   // ── find mail ───────────────────────────────────────────
   log('find — mail');
+  let firstMailId: string | null = null;
   try {
     const mailResult = await mcpCall(3, 'tools/call', {
       name: 'find',
       arguments: { query: '*', entity_types: ['mail'], top: 3 },
     });
     assertOk('find mail', mailResult);
+    // Capture first mail ID for get_email / compose_email reply tests
+    const sc = (mailResult.result as { structuredContent?: { results?: Array<{ id?: string }> } })?.structuredContent;
+    firstMailId = sc?.results?.[0]?.id ?? null;
   } catch (err) {
     fail('find mail', errMsg(err));
+  }
+
+  // ── find mail with kql override ────────────────────────
+  log('find — mail with kql');
+  try {
+    const kqlResult = await mcpCall(30, 'tools/call', {
+      name: 'find',
+      arguments: {
+        query: 'fallback-text',
+        kql: 'from:noreply@microsoft.com',
+        entity_types: ['mail'],
+        top: 3,
+      },
+    });
+    assertOk('find mail+kql', kqlResult);
+    const sc = (kqlResult.result as { structuredContent?: { kql?: string } })?.structuredContent;
+    if (sc?.kql === 'from:noreply@microsoft.com') {
+      pass('kql echoed in response');
+    } else {
+      fail('kql not echoed in response', JSON.stringify(sc));
+    }
+  } catch (err) {
+    fail('find mail+kql', errMsg(err));
   }
 
   // ── find events ─────────────────────────────────────────
@@ -176,6 +237,38 @@ export async function runSmoke(): Promise<void> {
     fail('find events', errMsg(err));
   }
 
+  // ── find events with date range → calendar-view ────────
+  log('find — events date-range (calendar-view)');
+  let firstEventId: string | null = null;
+  try {
+    const now = new Date();
+    const startDate = now.toISOString().slice(0, 10) + 'T00:00:00';
+    const tomorrow = new Date(now.getTime() + 86_400_000);
+    const endDate = tomorrow.toISOString().slice(0, 10) + 'T00:00:00';
+    const dateResult = await mcpCall(40, 'tools/call', {
+      name: 'find',
+      arguments: {
+        query: 'meetings',
+        entity_types: ['events'],
+        start_date: startDate,
+        end_date: endDate,
+        top: 3,
+      },
+    });
+    assertOk('find events date-range', dateResult);
+    const sc = (dateResult.result as { structuredContent?: { providers?: string[]; results?: Array<{ id?: string }> } })?.structuredContent;
+    const providers = sc?.providers ?? [];
+    if (providers.includes('calendar-view')) {
+      pass('date-range provider = calendar-view');
+    } else {
+      fail(`date-range provider = ${JSON.stringify(providers)} (expected calendar-view)`);
+    }
+    // Capture first event ID for get_event test
+    firstEventId = sc?.results?.[0]?.id ?? null;
+  } catch (err) {
+    fail('find events date-range', errMsg(err));
+  }
+
   // ── find files ──────────────────────────────────────────
   log('find — files');
   try {
@@ -185,13 +278,238 @@ export async function runSmoke(): Promise<void> {
     });
     if (filesResult.ok) {
       pass('find files');
+      // Verify provider is graph-search (not copilot-retrieval)
+      const sc = (filesResult.result as { structuredContent?: { providers?: string[] } })?.structuredContent;
+      const providers = sc?.providers ?? [];
+      if (providers.includes('graph-search') && !providers.includes('copilot-retrieval')) {
+        pass('files provider = graph-search');
+      } else {
+        fail(`files provider = ${JSON.stringify(providers)} (expected graph-search only)`);
+      }
     } else {
-      // Files/Copilot retrieval may not be enabled — treat as warning
-      warn('find files (retrieval may not be enabled)');
+      // Graph Search may return empty for certain tenants or queries — treat as warning
+      warn('find files (search returned no results)');
     }
   } catch (err) {
     // Timeout or network error — treat as warning, not hard failure
     warn(`find files (${errMsg(err)})`);
+  }
+
+  // ── get_email ───────────────────────────────────────────
+  log('get_email');
+  if (firstMailId) {
+    try {
+      const getResult = await mcpCall(50, 'tools/call', {
+        name: 'get_email',
+        arguments: { message_id: firstMailId, include_full: true },
+      });
+      assertOk('get_email by ID', getResult);
+      const sc = (getResult.result as { structuredContent?: { id?: string } })?.structuredContent;
+      if (sc?.id === firstMailId) {
+        pass('get_email returned correct ID');
+      } else {
+        fail(`get_email ID mismatch: ${sc?.id} vs ${firstMailId}`);
+      }
+    } catch (err) {
+      fail('get_email', errMsg(err));
+    }
+  } else {
+    warn('get_email skipped (no mail found by find)');
+  }
+
+  // ── get_event ──────────────────────────────────────────
+  log('get_event');
+  if (firstEventId) {
+    try {
+      const getResult = await mcpCall(51, 'tools/call', {
+        name: 'get_event',
+        arguments: { event_id: firstEventId, include_full: true },
+      });
+      assertOk('get_event by ID', getResult);
+      const sc = (getResult.result as { structuredContent?: { id?: string } })?.structuredContent;
+      if (sc?.id === firstEventId) {
+        pass('get_event returned correct ID');
+      } else {
+        fail(`get_event ID mismatch: ${sc?.id} vs ${firstEventId}`);
+      }
+    } catch (err) {
+      fail('get_event', errMsg(err));
+    }
+  } else {
+    warn('get_event skipped (no event found by find)');
+  }
+
+  // ── compose_email — draft (safe, no send) ──────────────
+  log('compose_email — draft to self');
+  if (currentUserEmail) {
+    try {
+      const draftResult = await mcpCall(52, 'tools/call', {
+        name: 'compose_email',
+        arguments: {
+          mode: 'draft',
+          to: currentUserEmail,
+          subject: `[Smoke Test] Draft — ${new Date().toISOString()}`,
+          body_html: '<p>This is a smoke-test draft. Safe to delete.</p>',
+        },
+      });
+      assertOk('compose_email draft', draftResult);
+      const sc = (draftResult.result as { structuredContent?: { is_draft?: boolean; id?: string } })?.structuredContent;
+      if (sc?.is_draft === true && sc?.id) {
+        pass('compose_email draft has id + is_draft');
+      } else {
+        fail('compose_email draft missing id or is_draft', JSON.stringify(sc));
+      }
+    } catch (err) {
+      fail('compose_email draft', errMsg(err));
+    }
+  } else {
+    warn('compose_email draft skipped (no current user email)');
+  }
+
+  // ── compose_email — send to self ───────────────────────
+  log('compose_email — send to self');
+  if (currentUserEmail) {
+    try {
+      const sendResult = await mcpCall(53, 'tools/call', {
+        name: 'compose_email',
+        arguments: {
+          mode: 'send',
+          to: currentUserEmail,
+          subject: `[Smoke Test] Send — ${new Date().toISOString()}`,
+          body_html: '<p>Smoke-test email sent to self. Safe to delete.</p>',
+          confirm: true,
+        },
+      });
+      assertOk('compose_email send', sendResult);
+      const sc = (sendResult.result as { structuredContent?: { success?: boolean } })?.structuredContent;
+      if (sc?.success === true) {
+        pass('compose_email send success=true');
+      } else {
+        fail('compose_email send missing success', JSON.stringify(sc));
+      }
+    } catch (err) {
+      fail('compose_email send', errMsg(err));
+    }
+  } else {
+    warn('compose_email send skipped (no current user email)');
+  }
+
+  // ── compose_email — reply ──────────────────────────────
+  log('compose_email — reply');
+  if (firstMailId) {
+    try {
+      const replyResult = await mcpCall(54, 'tools/call', {
+        name: 'compose_email',
+        arguments: {
+          mode: 'reply',
+          message_id: firstMailId,
+          body_html: '<p>Smoke-test reply draft. Safe to delete.</p>',
+        },
+      });
+      assertOk('compose_email reply draft', replyResult);
+      const sc = (replyResult.result as { structuredContent?: { mode?: string; is_draft?: boolean } })?.structuredContent;
+      if (sc?.mode === 'draft' && sc?.is_draft === true) {
+        pass('compose_email reply is draft');
+      } else {
+        fail('compose_email reply unexpected shape', JSON.stringify(sc));
+      }
+    } catch (err) {
+      fail('compose_email reply', errMsg(err));
+    }
+  } else {
+    warn('compose_email reply skipped (no mail found by find)');
+  }
+
+  // ── schedule_meeting — preview (no confirm) ────────────
+  log('schedule_meeting — preview');
+  try {
+    const futureStart = new Date(Date.now() + 7 * 86_400_000);
+    futureStart.setHours(10, 0, 0, 0);
+    const futureEnd = new Date(futureStart.getTime() + 30 * 60_000);
+    const previewResult = await mcpCall(55, 'tools/call', {
+      name: 'schedule_meeting',
+      arguments: {
+        subject: '[Smoke Test] Preview Meeting',
+        start: futureStart.toISOString(),
+        end: futureEnd.toISOString(),
+      },
+    });
+    assertOk('schedule_meeting preview', previewResult);
+    const sc = (previewResult.result as { structuredContent?: { requires_confirmation?: boolean } })?.structuredContent;
+    if (sc?.requires_confirmation === true) {
+      pass('schedule_meeting returns requires_confirmation');
+    } else {
+      fail('schedule_meeting preview unexpected shape', JSON.stringify(sc));
+    }
+  } catch (err) {
+    fail('schedule_meeting preview', errMsg(err));
+  }
+
+  // ── schedule_meeting — create + cancel ─────────────────
+  log('schedule_meeting — create + cancel');
+  let scheduledEventId: string | null = null;
+  try {
+    const futureStart = new Date(Date.now() + 8 * 86_400_000);
+    futureStart.setHours(15, 0, 0, 0);
+    const futureEnd = new Date(futureStart.getTime() + 30 * 60_000);
+    const createResult = await mcpCall(56, 'tools/call', {
+      name: 'schedule_meeting',
+      arguments: {
+        subject: `[Smoke Test] Create+Cancel — ${new Date().toISOString()}`,
+        start: futureStart.toISOString(),
+        end: futureEnd.toISOString(),
+        confirm: true,
+      },
+    });
+    assertOk('schedule_meeting create', createResult);
+    const sc = (createResult.result as { structuredContent?: { id?: string } })?.structuredContent;
+    scheduledEventId = sc?.id ?? null;
+    if (scheduledEventId) {
+      pass(`schedule_meeting created event ${scheduledEventId.slice(0, 20)}...`);
+
+      // Cancel the event we just created
+      const cancelResult = await mcpCall(57, 'tools/call', {
+        name: 'respond_to_meeting',
+        arguments: {
+          event_id: scheduledEventId,
+          action: 'cancel',
+          comment: 'Smoke test cleanup',
+          confirm: true,
+        },
+      });
+      assertOk('respond_to_meeting cancel (cleanup)', cancelResult);
+    } else {
+      fail('schedule_meeting create returned no event ID', JSON.stringify(sc));
+    }
+  } catch (err) {
+    fail('schedule_meeting create+cancel', errMsg(err));
+  }
+
+  // ── respond_to_meeting — accept (on found event) ───────
+  log('respond_to_meeting — accept');
+  if (firstEventId) {
+    try {
+      const acceptResult = await mcpCall(58, 'tools/call', {
+        name: 'respond_to_meeting',
+        arguments: {
+          event_id: firstEventId,
+          action: 'accept',
+          confirm: true,
+        },
+      });
+      assertOk('respond_to_meeting accept', acceptResult);
+      const sc = (acceptResult.result as { structuredContent?: { success?: boolean; action?: string } })?.structuredContent;
+      if (sc?.success === true && sc?.action === 'accept') {
+        pass('respond_to_meeting accept success');
+      } else {
+        // Accept may fail if we organized the event — treat as warning
+        warn('respond_to_meeting accept — unexpected shape (may be self-organized)');
+      }
+    } catch (err) {
+      warn(`respond_to_meeting accept (${errMsg(err)})`);
+    }
+  } else {
+    warn('respond_to_meeting accept skipped (no event found)');
   }
 
   // ── audit_list ──────────────────────────────────────────
