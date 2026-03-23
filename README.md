@@ -375,19 +375,25 @@ The token persists across container restarts and scale-to-zero cycles because it
 make smoke-user U=jdoe
 ```
 
-This scales up the container, runs a built-in smoke test suite inside it, and scales back down. The smoke test validates 7 checks:
+This scales up the container, runs a built-in smoke test suite inside it, and scales back down. The smoke test validates end-to-end functionality across all tool categories:
 
-| #   | Check         | What it tests                                          |
-| --- | ------------- | ------------------------------------------------------ |
-| 1   | `health`      | `GET /health` returns status OK and authenticated user |
-| 2   | `tools/list`  | MCP `tools/list` returns available tools               |
-| 3   | `auth whoami` | Auth tool returns the signed-in user identity          |
-| 4   | `find mail`   | Graph API mail search works                            |
-| 5   | `find events` | Graph API calendar search works                        |
-| 6   | `find files`  | Graph API file search works                            |
-| 7   | `audit_list`  | Audit log retrieval works                              |
+| #   | Check                | What it tests                                                    |
+| --- | -------------------- | ---------------------------------------------------------------- |
+| 1   | `health`             | `GET /health` returns status OK and authenticated user           |
+| 2   | `tools/list`         | MCP `tools/list` returns all 11 tools                            |
+| 3   | `find mail`          | Graph API mail search works                                      |
+| 4   | `find events`        | Graph API calendar date-range search works                       |
+| 5   | `find files`         | Graph API file search works                                      |
+| 6   | `get_file_metadata`  | File metadata retrieval by drive/item ID                         |
+| 7   | `get_file_content`   | File content download (text inline or binary base64)             |
+| 8   | `get_email`          | Email retrieval by ID                                            |
+| 9   | `get_email_thread`   | Conversation thread fetch (by conversation_id and by message_id) |
+| 10  | `get_event`          | Calendar event retrieval by ID                                   |
+| 11  | `compose_email`      | Draft, send, and reply flows                                     |
+| 12  | `schedule_meeting`   | Preview + create meeting with auto free-slot finding             |
+| 13  | `respond_to_meeting` | Accept meeting invitation                                        |
 
-Expected output:
+Expected output (abbreviated):
 
 ```
 MCP Gateway — Remote Smoke Test
@@ -396,20 +402,28 @@ MCP Gateway — Remote Smoke Test
   ✓ health
     {"status":"ok","user":"jdoe@example.com"}
 ▸ tools/list
-  ✓ tools/list
-▸ auth whoami
-  ✓ auth whoami
-    User: jdoe@example.com
+  ✓ tools/list count = 11
 ▸ find — mail
   ✓ find mail
 ▸ find — events
   ✓ find events
 ▸ find — files
   ✓ find files
-▸ audit_list
-  ✓ audit_list
+  ✓ get_file_metadata ...
+  ✓ get_file_content ...
+▸ get_email / get_email_thread
+  ✓ get_email returned correct ID
+  ✓ get_email_thread correct conversation_id
+  ✓ get_email_thread (by msg_id) ...
+▸ compose_email
+  ✓ compose_email draft ...
+  ✓ compose_email send ...
+▸ schedule_meeting
+  ✓ schedule_meeting ...
+▸ respond_to_meeting
+  ✓ respond_to_meeting accept ...
 
-▸ Results: 7 passed, 0 failed, 0 warnings
+▸ Results: N passed, 0 failed, 0 warnings
 All smoke tests passed!
 ```
 

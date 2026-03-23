@@ -75,7 +75,7 @@ show the user what will happen before committing.
 
 ---
 
-## Tools Reference (8 tools)
+## Tools Reference (11 tools)
 
 ### 1. `auth`
 
@@ -329,7 +329,170 @@ Fetch a specific calendar event by ID. Use after `find` to retrieve full details
 
 ---
 
-### 5. `compose_email`
+### 5. `get_email_thread`
+
+Fetch all messages in an email conversation thread. Provide either a
+`conversation_id` (from `get_email` with `include_full=true`) or a `message_id`
+(the tool resolves the `conversationId` automatically). Returns messages sorted
+oldest-first.
+
+| Parameter         | Type    | Required         | Description                                                             |
+| ----------------- | ------- | ---------------- | ----------------------------------------------------------------------- |
+| `conversation_id` | string  | one of the two\* | Conversation ID (from `get_email` response when `include_full=true`)    |
+| `message_id`      | string  | one of the two\* | Message ID — the tool fetches the message to resolve its conversationId |
+| `top`             | integer | no               | Max messages to return (1-50, default 10)                               |
+| `include_full`    | boolean | no               | `true` for expanded fields (body, all recipients). Default: minimal.    |
+
+\*At least one of `conversation_id` or `message_id` must be provided.
+
+**Example** — get thread by conversation ID:
+
+```json
+{
+  "name": "get_email_thread",
+  "arguments": { "conversation_id": "AAQk...", "include_full": true }
+}
+```
+
+**Example** — get thread by message ID:
+
+```json
+{
+  "name": "get_email_thread",
+  "arguments": { "message_id": "AAMk...", "top": 20 }
+}
+```
+
+**Response**:
+
+```json
+{
+  "conversation_id": "AAQk...",
+  "message_count": 4,
+  "messages": [
+    {
+      "id": "AAMk...",
+      "subject": "Re: Q4 Budget Report",
+      "from": { "address": "finance@contoso.com", "name": "Finance Team" },
+      "received_at": "2026-02-18T10:00:00Z",
+      "is_read": true,
+      "web_link": "https://outlook.office365.com/owa/?itemid=..."
+    },
+    {
+      "id": "AAMk...",
+      "subject": "Re: Q4 Budget Report",
+      "from": { "address": "jane@contoso.com", "name": "Jane Doe" },
+      "received_at": "2026-02-19T14:30:00Z",
+      "is_read": true,
+      "web_link": "https://outlook.office365.com/owa/?itemid=..."
+    }
+  ]
+}
+```
+
+---
+
+### 6. `get_file_metadata`
+
+Get metadata for a OneDrive/SharePoint file by `drive_id` and `item_id` (both
+returned by `find` in file results). Returns file name, path, size, modified
+date, web URL, and creator info.
+
+| Parameter      | Type    | Required | Description                                                                                |
+| -------------- | ------- | -------- | ------------------------------------------------------------------------------------------ |
+| `drive_id`     | string  | yes      | Drive ID from `find` file results (`resource.parentReference.driveId` or `drive_id` field) |
+| `item_id`      | string  | yes      | Item ID from `find` file results (`resource.id` or `item_id` field)                        |
+| `include_full` | boolean | no       | `true` for expanded fields (parent path, created/modified by). Default: minimal.           |
+
+**Example**:
+
+```json
+{
+  "name": "get_file_metadata",
+  "arguments": { "drive_id": "b!abc...", "item_id": "01XYZ...", "include_full": true }
+}
+```
+
+**Response** (full):
+
+```json
+{
+  "id": "01XYZ...",
+  "name": "Budget_Q4_2026.xlsx",
+  "size": 45321,
+  "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "web_url": "https://contoso.sharepoint.com/sites/Finance/Shared Documents/Budget_Q4_2026.xlsx",
+  "last_modified": "2026-02-20T14:30:00Z",
+  "drive_id": "b!abc...",
+  "item_id": "01XYZ...",
+  "created_by": "Jane Doe",
+  "modified_by": "Bob Smith",
+  "parent_path": "/drives/b!abc.../root:/Finance/Reports"
+}
+```
+
+---
+
+### 7. `get_file_content`
+
+Download and return the content of a OneDrive/SharePoint file. Text files
+(`text/*`, `application/json`, `application/xml`, `application/javascript`) are
+returned inline as UTF-8 text with optional truncation. Binary files are returned
+as base64-encoded strings. Maximum file size: 10 MB.
+
+| Parameter   | Type    | Required | Description                                                                    |
+| ----------- | ------- | -------- | ------------------------------------------------------------------------------ |
+| `drive_id`  | string  | yes      | Drive ID from `find` file results                                              |
+| `item_id`   | string  | yes      | Item ID from `find` file results                                               |
+| `max_chars` | integer | no       | Max chars for text content (1-50000, default from config). Ignored for binary. |
+
+**Example** — read a text file:
+
+```json
+{
+  "name": "get_file_content",
+  "arguments": { "drive_id": "b!abc...", "item_id": "01XYZ...", "max_chars": 10000 }
+}
+```
+
+**Response** (text):
+
+```json
+{
+  "name": "meeting-notes.md",
+  "mime_type": "text/markdown",
+  "size_bytes": 2048,
+  "encoding": "text",
+  "content": "# Sprint Planning Notes\n\n## Action Items\n- Review backlog...",
+  "truncated": false
+}
+```
+
+**Response** (binary):
+
+```json
+{
+  "name": "logo.png",
+  "mime_type": "image/png",
+  "size_bytes": 15360,
+  "encoding": "base64",
+  "content": "iVBORw0KGgoAAAANSUhEUgAA...",
+  "truncated": false
+}
+```
+
+**Error** — file too large:
+
+```json
+{
+  "isError": true,
+  "content": [{ "type": "text", "text": "VALIDATION_ERROR: file 'database.bak' is 52428800 bytes, exceeds 10485760 byte limit" }]
+}
+```
+
+---
+
+### 8. `compose_email`
 
 Compose an email: draft, send, reply, or reply-all. Write operations require `confirm=true`.
 
@@ -375,7 +538,7 @@ Compose an email: draft, send, reply, or reply-all. Write operations require `co
 
 ---
 
-### 6. `schedule_meeting`
+### 9. `schedule_meeting`
 
 Schedule a meeting. Supports explicit start/end times or automatic free-slot
 finding. Supports Teams meetings and agendas. Requires `confirm=true`.
@@ -418,7 +581,7 @@ finding. Supports Teams meetings and agendas. Requires `confirm=true`.
 
 ---
 
-### 7. `respond_to_meeting`
+### 10. `respond_to_meeting`
 
 Respond to a meeting invitation or cancel a meeting you organized. Requires
 `confirm=true` for accept/decline/cancel.
@@ -460,7 +623,7 @@ Respond to a meeting invitation or cancel a meeting you organized. Requires
 
 ---
 
-### 8. `audit_list`
+### 11. `audit_list`
 
 List recent audit log entries. Records all write actions and blocked attempts.
 
@@ -531,7 +694,8 @@ List recent audit log entries. Records all write actions and blocked attempts.
 
 1. Search: `find` with `query: "emails from John about budget"`, `entity_types: ["mail"]`
 2. Get details: `get_email` with the `id` from step 1, `include_full: true`
-3. Reply: `compose_email` with `mode: "reply"`, `message_id`, `body_html`, `confirm: true`
+3. Read thread: `get_email_thread` with the `conversation_id` from step 2 to see full context
+4. Reply: `compose_email` with `mode: "reply"`, `message_id`, `body_html`, `confirm: true`
 
 ### "Prepare me for my 2pm meeting"
 
@@ -557,6 +721,31 @@ List recent audit log entries. Records all write actions and blocked attempts.
     "teams_meeting": true,
     "confirm": true
   }
+}
+```
+
+### "Read the contents of a document I found"
+
+1. Search: `find` with `query: "project proposal"`, `entity_types: ["files"]`
+2. Get content: `get_file_content` with `drive_id` and `item_id` from the file result
+
+```json
+{
+  "name": "get_file_content",
+  "arguments": { "drive_id": "b!abc...", "item_id": "01XYZ...", "max_chars": 20000 }
+}
+```
+
+### "Catch me up on an email conversation"
+
+1. Search: `find` with `query: "project kickoff from Alice"`, `entity_types: ["mail"]`
+2. Get email: `get_email` with the `id` from step 1, `include_full: true` (to get `conversation_id`)
+3. Get thread: `get_email_thread` with the `conversation_id` from step 2
+
+```json
+{
+  "name": "get_email_thread",
+  "arguments": { "conversation_id": "AAQk...", "include_full": true }
 }
 ```
 
@@ -591,7 +780,10 @@ the default timezone offset. For America/New_York, that means `-05:00`.
 By default, responses include only high-signal fields (IDs, subject/title,
 sender/organizer, timestamps, links, short snippets).
 
-Pass `include_full=true` on `get_email` and `get_event` to expand:
+Pass `include_full=true` on `get_email`, `get_event`, `get_email_thread`, and
+`get_file_metadata` to expand:
 
 - **Email**: full body HTML, all recipients (to, cc), conversation ID
 - **Event**: full attendee list with response status, body preview, online meeting details
+- **Email thread**: full body and recipients for each message in the thread
+- **File metadata**: parent path, created/modified by details

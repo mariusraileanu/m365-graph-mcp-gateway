@@ -132,13 +132,13 @@ export async function runSmoke(): Promise<void> {
     const toolsResult = await mcpCall(1, 'tools/list', {});
     assertOk('tools/list', toolsResult);
 
-    // A1: Verify exactly 8 tools are registered (summarize + prepare_meeting removed)
+    // A1: Verify exactly 11 tools are registered
     const toolsPayload = toolsResult.result as { tools?: unknown[] } | undefined;
     const toolCount = toolsPayload?.tools?.length ?? -1;
-    if (toolCount === 8) {
+    if (toolCount === 11) {
       pass(`tools/list count = ${toolCount}`);
     } else {
-      fail(`tools/list count = ${toolCount} (expected 8)`);
+      fail(`tools/list count = ${toolCount} (expected 11)`);
     }
   } catch (err) {
     fail('tools/list', errMsg(err));
@@ -271,6 +271,8 @@ export async function runSmoke(): Promise<void> {
 
   // ── find files ──────────────────────────────────────────
   log('find — files');
+  let firstFileDriveId: string | null = null;
+  let firstFileItemId: string | null = null;
   try {
     const filesResult = await mcpCall(5, 'tools/call', {
       name: 'find',
@@ -279,13 +281,18 @@ export async function runSmoke(): Promise<void> {
     if (filesResult.ok) {
       pass('find files');
       // Verify provider is graph-search (not copilot-retrieval)
-      const sc = (filesResult.result as { structuredContent?: { providers?: string[] } })?.structuredContent;
+      const sc = (
+        filesResult.result as { structuredContent?: { providers?: string[]; results?: Array<{ drive_id?: string; id?: string }> } }
+      )?.structuredContent;
       const providers = sc?.providers ?? [];
       if (providers.includes('graph-search') && !providers.includes('copilot-retrieval')) {
         pass('files provider = graph-search');
       } else {
         fail(`files provider = ${JSON.stringify(providers)} (expected graph-search only)`);
       }
+      // Capture first file IDs for get_file_metadata / get_file_content tests
+      firstFileDriveId = sc?.results?.[0]?.drive_id ?? null;
+      firstFileItemId = sc?.results?.[0]?.id ?? null;
     } else {
       // Graph Search may return empty for certain tenants or queries — treat as warning
       warn('find files (search returned no results)');
@@ -295,8 +302,60 @@ export async function runSmoke(): Promise<void> {
     warn(`find files (${errMsg(err)})`);
   }
 
+  // ── get_file_metadata ──────────────────────────────────
+  log('get_file_metadata');
+  if (firstFileDriveId && firstFileItemId) {
+    try {
+      const metaResult = await mcpCall(62, 'tools/call', {
+        name: 'get_file_metadata',
+        arguments: { drive_id: firstFileDriveId, item_id: firstFileItemId, include_full: true },
+      });
+      assertOk('get_file_metadata', metaResult);
+      const sc = (metaResult.result as { structuredContent?: { id?: string; name?: string } })?.structuredContent;
+      if (sc?.id === firstFileItemId) {
+        pass(`get_file_metadata correct ID, name="${sc?.name}"`);
+      } else {
+        fail(`get_file_metadata ID mismatch: ${sc?.id} vs ${firstFileItemId}`);
+      }
+    } catch (err) {
+      fail('get_file_metadata', errMsg(err));
+    }
+  } else {
+    warn('get_file_metadata skipped (no file found by find)');
+  }
+
+  // ── get_file_content ───────────────────────────────────
+  log('get_file_content');
+  if (firstFileDriveId && firstFileItemId) {
+    try {
+      const contentResult = await mcpCall(63, 'tools/call', {
+        name: 'get_file_content',
+        arguments: { drive_id: firstFileDriveId, item_id: firstFileItemId, max_chars: 500 },
+      });
+      assertOk('get_file_content', contentResult);
+      const sc = (contentResult.result as { structuredContent?: { name?: string; encoding?: string; size_bytes?: number } })
+        ?.structuredContent;
+      if (sc?.encoding === 'text' || sc?.encoding === 'base64') {
+        pass(`get_file_content encoding=${sc.encoding}, size=${sc.size_bytes} bytes`);
+      } else {
+        fail(`get_file_content unexpected encoding`, JSON.stringify(sc));
+      }
+    } catch (err) {
+      // File may be too large or restricted — treat as warning
+      const msg = errMsg(err);
+      if (msg.includes('VALIDATION_ERROR') || msg.includes('exceeds')) {
+        warn(`get_file_content skipped (file too large)`);
+      } else {
+        fail('get_file_content', msg);
+      }
+    }
+  } else {
+    warn('get_file_content skipped (no file found by find)');
+  }
+
   // ── get_email ───────────────────────────────────────────
   log('get_email');
+  let firstMailConversationId: string | null = null;
   if (firstMailId) {
     try {
       const getResult = await mcpCall(50, 'tools/call', {
@@ -304,17 +363,63 @@ export async function runSmoke(): Promise<void> {
         arguments: { message_id: firstMailId, include_full: true },
       });
       assertOk('get_email by ID', getResult);
-      const sc = (getResult.result as { structuredContent?: { id?: string } })?.structuredContent;
+      const sc = (getResult.result as { structuredContent?: { id?: string; conversation_id?: string } })?.structuredContent;
       if (sc?.id === firstMailId) {
         pass('get_email returned correct ID');
       } else {
         fail(`get_email ID mismatch: ${sc?.id} vs ${firstMailId}`);
       }
+      firstMailConversationId = sc?.conversation_id ?? null;
     } catch (err) {
       fail('get_email', errMsg(err));
     }
   } else {
     warn('get_email skipped (no mail found by find)');
+  }
+
+  // ── get_email_thread ───────────────────────────────────
+  log('get_email_thread');
+  if (firstMailConversationId) {
+    try {
+      const threadResult = await mcpCall(60, 'tools/call', {
+        name: 'get_email_thread',
+        arguments: { conversation_id: firstMailConversationId, top: 5 },
+      });
+      assertOk('get_email_thread by conversation_id', threadResult);
+      const sc = (threadResult.result as { structuredContent?: { conversation_id?: string; message_count?: number; messages?: unknown[] } })
+        ?.structuredContent;
+      if (sc?.conversation_id === firstMailConversationId) {
+        pass('get_email_thread correct conversation_id');
+      } else {
+        fail(`get_email_thread conversation_id mismatch`, JSON.stringify(sc));
+      }
+      if (typeof sc?.message_count === 'number' && sc.message_count >= 1) {
+        pass(`get_email_thread returned ${sc.message_count} message(s)`);
+      } else {
+        fail('get_email_thread empty or missing messages', JSON.stringify(sc));
+      }
+    } catch (err) {
+      fail('get_email_thread', errMsg(err));
+    }
+  } else if (firstMailId) {
+    // Fallback: use message_id path
+    try {
+      const threadResult = await mcpCall(61, 'tools/call', {
+        name: 'get_email_thread',
+        arguments: { message_id: firstMailId, top: 5 },
+      });
+      assertOk('get_email_thread by message_id', threadResult);
+      const sc = (threadResult.result as { structuredContent?: { message_count?: number } })?.structuredContent;
+      if (typeof sc?.message_count === 'number' && sc.message_count >= 1) {
+        pass(`get_email_thread (by msg_id) returned ${sc.message_count} message(s)`);
+      } else {
+        fail('get_email_thread (by msg_id) empty', JSON.stringify(sc));
+      }
+    } catch (err) {
+      fail('get_email_thread by message_id', errMsg(err));
+    }
+  } else {
+    warn('get_email_thread skipped (no mail found by find)');
   }
 
   // ── get_event ──────────────────────────────────────────
