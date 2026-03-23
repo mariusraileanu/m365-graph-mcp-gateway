@@ -29,6 +29,150 @@ All calls use JSON-RPC 2.0:
 
 ---
 
+## Authentication
+
+The `/mcp` endpoint supports optional API key authentication via the
+`GRAPH_MCP_API_KEY` environment variable.
+
+| Configuration        | Behavior                                                    |
+| -------------------- | ----------------------------------------------------------- |
+| Key not set or empty | Open access — no `Authorization` header required            |
+| Key set              | Requires `Authorization: Bearer <key>` on every `/mcp` call |
+
+- `/health` and `/auth/status` are **never** gated by the API key.
+- Uses **constant-time comparison** (`crypto.timingSafeEqual`) to prevent timing attacks.
+- Returns HTTP **401** with `{"error": "Unauthorized: invalid or missing API key"}` on failure.
+
+```bash
+# With API key configured
+curl -s http://localhost:3000/mcp \
+  -H "Authorization: Bearer $GRAPH_MCP_API_KEY" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"ping"}'
+```
+
+---
+
+## Protocol Lifecycle
+
+### `initialize`
+
+Clients **must** send `initialize` as the first request. The server validates the
+client's requested `protocolVersion` and returns its own capabilities.
+
+**Request:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "method": "initialize",
+  "params": {
+    "protocolVersion": "2025-03-26",
+    "capabilities": {},
+    "clientInfo": { "name": "my-agent", "version": "1.0" }
+  }
+}
+```
+
+**Response:**
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 1,
+  "result": {
+    "protocolVersion": "2025-03-26",
+    "capabilities": { "tools": { "listChanged": false } },
+    "serverInfo": { "name": "m365-graph-mcp-gateway", "version": "1.0.0" }
+  }
+}
+```
+
+If the client sends an unsupported `protocolVersion`, the server returns a
+`-32602` error with the list of supported versions.
+
+After receiving the `initialize` response, the client should send a
+`notifications/initialized` notification to complete the handshake.
+
+### `ping`
+
+Health check at the protocol level. Returns an empty result.
+
+```json
+// Request
+{ "jsonrpc": "2.0", "id": 42, "method": "ping" }
+
+// Response
+{ "jsonrpc": "2.0", "id": 42, "result": {} }
+```
+
+### Notifications
+
+Notifications are JSON-RPC messages with **no `id` field**. The server returns
+HTTP **204 No Content** with no body. Supported notifications:
+
+| Notification                | Description                                          |
+| --------------------------- | ---------------------------------------------------- |
+| `notifications/initialized` | Client signals it has completed initialization       |
+| `notifications/cancelled`   | Client requests cancellation of an in-flight request |
+
+`notifications/cancelled` accepts `params.requestId` (the `id` of the request to
+cancel). If the request is still in-flight, it will be aborted.
+
+### Rate Limiting
+
+The `/mcp` endpoint enforces a per-client sliding-window rate limit. The default
+is **100 requests per 60-second window**. When exceeded, the server returns:
+
+- HTTP **429 Too Many Requests**
+- Body: `{"error": "Rate limit exceeded. Try again in Ns."}`
+- `Retry-After` header with the number of seconds to wait
+
+Rate limiting is applied **after** API key authentication but **before** JSON-RPC
+processing. Health and auth status endpoints are not rate-limited.
+
+---
+
+## JSON-RPC Validation
+
+All inbound messages are validated against JSON-RPC 2.0 before dispatch.
+Validation errors are returned with HTTP **200** (per JSON-RPC spec) and the
+appropriate error code:
+
+| Code     | Meaning                  | Example cause                                                         |
+| -------- | ------------------------ | --------------------------------------------------------------------- |
+| `-32700` | Parse error              | Body is not valid JSON                                                |
+| `-32600` | Invalid Request          | Missing `jsonrpc:"2.0"`, bad `id` type, missing `method`              |
+| `-32601` | Method not found         | Unknown method (not `initialize`, `ping`, `tools/list`, `tools/call`) |
+| `-32602` | Invalid params           | Unsupported protocol version in `initialize`                          |
+| `-32000` | Server error (catch-all) | Unhandled exception during tool execution                             |
+
+**Key rules:**
+
+- JSON-RPC errors always return HTTP 200. Only HTTP-level issues use non-200 codes (401 auth, 413 body too large, 429 rate limit, 404 unknown route).
+- The `id` in error responses mirrors the request's `id` (or `null` if the `id` was invalid or absent).
+- Array bodies (batch requests) are rejected with `-32600` — batch mode is not supported.
+
+---
+
+## Request Logging
+
+Every request to `/mcp` is logged as structured JSON to stdout. Each log entry
+includes:
+
+| Field         | Description                                          |
+| ------------- | ---------------------------------------------------- |
+| `method`      | JSON-RPC method (e.g. `tools/call`, `ping`)          |
+| `id`          | Request ID (string, number, or null)                 |
+| `tool`        | Tool name (only for `tools/call` requests)           |
+| `duration_ms` | Wall-clock time from request parse to response write |
+| `status`      | `"ok"` or `"error"`                                  |
+| `error_code`  | JSON-RPC error code (only on errors)                 |
+
+Notifications log `method` only (no `id`, no duration since there's no response).
+
+---
+
 ## Response Shape
 
 Every `tools/call` response follows this contract:

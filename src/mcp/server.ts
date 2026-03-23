@@ -9,8 +9,9 @@ import type { MCPRequest, MCPResponse, MCPMessage } from '../utils/types.js';
 
 const MAX_REQUEST_BYTES = 1_048_576; // 1 MB
 
-/** MCP protocol version this server supports. */
-const PROTOCOL_VERSION = '2025-03-26';
+/** MCP protocol versions this server supports. */
+const SUPPORTED_VERSIONS = ['2025-03-26'] as const;
+const LATEST_VERSION = SUPPORTED_VERSIONS[0];
 
 const SERVER_INFO = { name: 'm365-graph-mcp-gateway', version: '1.0.0' };
 
@@ -23,6 +24,69 @@ const SECURITY_HEADERS: Record<string, string> = {
   'X-Frame-Options': 'DENY',
   'Cache-Control': 'no-store',
 };
+
+// ── Rate limiter (sliding window) ──────────────────────────────────────────
+
+const RATE_LIMIT_MAX = 100;
+const RATE_LIMIT_WINDOW_MS = 60_000;
+
+interface RateBucket {
+  timestamps: number[];
+}
+
+const rateBuckets = new Map<string, RateBucket>();
+
+/**
+ * Check and record a request against the sliding-window rate limit.
+ * Returns the number of seconds to wait if rate-limited, or 0 if allowed.
+ */
+function checkRateLimit(clientKey: string): number {
+  const now = Date.now();
+  const windowStart = now - RATE_LIMIT_WINDOW_MS;
+
+  let bucket = rateBuckets.get(clientKey);
+  if (!bucket) {
+    bucket = { timestamps: [] };
+    rateBuckets.set(clientKey, bucket);
+  }
+
+  // Trim old entries outside the window
+  bucket.timestamps = bucket.timestamps.filter((t) => t > windowStart);
+
+  if (bucket.timestamps.length >= RATE_LIMIT_MAX) {
+    // Compute retry-after: time until the oldest entry in window expires
+    const oldestInWindow = bucket.timestamps[0]!;
+    const retryAfterMs = oldestInWindow + RATE_LIMIT_WINDOW_MS - now;
+    return Math.ceil(retryAfterMs / 1000);
+  }
+
+  bucket.timestamps.push(now);
+  return 0;
+}
+
+// Periodically clean up stale rate-limit buckets (every 5 minutes)
+const rateLimitCleanupInterval = setInterval(
+  () => {
+    const cutoff = Date.now() - RATE_LIMIT_WINDOW_MS;
+    for (const [key, bucket] of rateBuckets) {
+      bucket.timestamps = bucket.timestamps.filter((t) => t > cutoff);
+      if (bucket.timestamps.length === 0) rateBuckets.delete(key);
+    }
+  },
+  5 * 60 * 1000,
+);
+rateLimitCleanupInterval.unref();
+
+/** Reset all rate-limit buckets. Exported for testing only. */
+export function _resetRateLimits(): void {
+  rateBuckets.clear();
+}
+
+// ── In-flight request tracking (for notifications/cancelled) ───────────────
+
+const inflightRequests = new Map<string | number, AbortController>();
+
+// ── Helpers ────────────────────────────────────────────────────────────────
 
 function jsonHeaders(): Record<string, string> {
   return { ...SECURITY_HEADERS, 'Content-Type': 'application/json' };
@@ -98,16 +162,39 @@ function validateMessage(raw: unknown): MCPResponse | null {
   return null; // valid
 }
 
-async function handleRequest(request: MCPRequest): Promise<MCPResponse> {
+/** Derive a rate-limit key from the request (IP-based). */
+function rateLimitKey(req: http.IncomingMessage): string {
+  // Use X-Forwarded-For if behind a proxy, otherwise remote address
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string') return forwarded.split(',')[0]?.trim() || 'unknown';
+  return req.socket.remoteAddress || 'unknown';
+}
+
+// ── Request handling ───────────────────────────────────────────────────────
+
+async function handleRequest(request: MCPRequest, signal?: AbortSignal): Promise<MCPResponse> {
   const { id, method, params } = request;
 
   try {
     if (method === 'initialize') {
+      // Validate protocol version
+      const clientVersion = typeof params?.protocolVersion === 'string' ? params.protocolVersion : undefined;
+      if (clientVersion && !SUPPORTED_VERSIONS.includes(clientVersion as (typeof SUPPORTED_VERSIONS)[number])) {
+        return {
+          jsonrpc: '2.0',
+          id,
+          error: {
+            code: -32602,
+            message: `Unsupported protocol version: ${clientVersion}. Supported: ${SUPPORTED_VERSIONS.join(', ')}`,
+          },
+        };
+      }
+
       return {
         jsonrpc: '2.0',
         id,
         result: {
-          protocolVersion: PROTOCOL_VERSION,
+          protocolVersion: LATEST_VERSION,
           capabilities: SERVER_CAPABILITIES,
           serverInfo: SERVER_INFO,
         },
@@ -128,6 +215,11 @@ async function handleRequest(request: MCPRequest): Promise<MCPResponse> {
     }
 
     if (method === 'tools/call') {
+      // Check if already cancelled before starting
+      if (signal?.aborted) {
+        return { jsonrpc: '2.0', id, error: { code: -32000, message: 'Request cancelled' } };
+      }
+
       const toolName = String(params?.name || '');
       const toolArgs = (params?.arguments || {}) as Record<string, unknown>;
       const result = await callTool(toolName, toolArgs);
@@ -155,9 +247,57 @@ async function processMessage(raw: unknown): Promise<MCPResponse | null> {
   const msg = raw as MCPMessage;
 
   // Notifications (no id) get no response
-  if (isNotification(msg)) return null;
+  if (isNotification(msg)) {
+    // Handle notifications/cancelled — abort in-flight request
+    if (msg.method === 'notifications/cancelled') {
+      const requestId = msg.params?.requestId;
+      if (requestId !== undefined && requestId !== null) {
+        const controller = inflightRequests.get(requestId as string | number);
+        if (controller) {
+          controller.abort();
+          inflightRequests.delete(requestId as string | number);
+        }
+      }
+    }
+    return null;
+  }
 
-  return handleRequest(msg as MCPRequest);
+  const request = msg as MCPRequest;
+
+  // Track in-flight request with AbortController
+  const controller = new AbortController();
+  const requestKey = request.id;
+  if (requestKey !== null) {
+    inflightRequests.set(requestKey, controller);
+  }
+
+  const start = performance.now();
+  let response: MCPResponse;
+  try {
+    response = await handleRequest(request, controller.signal);
+  } finally {
+    if (requestKey !== null) {
+      inflightRequests.delete(requestKey);
+    }
+  }
+  const duration = Math.round(performance.now() - start);
+
+  // Structured request log
+  const logData: Record<string, unknown> = {
+    method: request.method,
+    id: request.id,
+    duration_ms: duration,
+    status: response.error ? 'error' : 'ok',
+  };
+  if (request.method === 'tools/call' && request.params?.name) {
+    logData.tool = request.params.name;
+  }
+  if (response.error) {
+    logData.error_code = response.error.code;
+  }
+  log.info('mcp request', logData);
+
+  return response;
 }
 
 export function startMcpStdioServer(): void {
@@ -236,6 +376,14 @@ export function startHttpServer(port = 3000): void {
       if (!checkApiKey(req)) {
         res.writeHead(401, jsonHeaders());
         res.end(JSON.stringify({ error: 'Unauthorized: invalid or missing API key' }));
+        return;
+      }
+
+      // Rate limiting (after auth, before processing)
+      const retryAfter = checkRateLimit(rateLimitKey(req));
+      if (retryAfter > 0) {
+        res.writeHead(429, { ...jsonHeaders(), 'Retry-After': String(retryAfter) });
+        res.end(JSON.stringify({ error: `Rate limit exceeded. Try again in ${retryAfter}s.` }));
         return;
       }
 

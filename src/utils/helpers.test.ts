@@ -5,7 +5,6 @@ import path from 'path';
 import {
   resolveStoragePath,
   parseRecipients,
-  checkEmailAllowed,
   compactText,
   normalizeError,
   stripHtml,

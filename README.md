@@ -20,6 +20,7 @@ npm install
 # Configure
 cp .env.example .env
 # Set GRAPH_MCP_CLIENT_ID and GRAPH_MCP_TENANT_ID
+# Optionally set GRAPH_MCP_API_KEY to protect the /mcp endpoint
 
 # Build
 npm run build
@@ -93,6 +94,17 @@ Set `PUBLIC_HOST` if using a non-default port (e.g., `PUBLIC_HOST=http://localho
 
 The MCP server accepts plain JSON-RPC POST requests — no SSE, no sessions. Each request is independent.
 
+### Supported MCP Methods
+
+| Method       | Description                                                  |
+| ------------ | ------------------------------------------------------------ |
+| `initialize` | Handshake — returns protocol version and server capabilities |
+| `ping`       | Protocol-level health check (returns `{}`)                   |
+| `tools/list` | List all available tools with input schemas                  |
+| `tools/call` | Execute a tool by name with arguments                        |
+
+Notifications (`notifications/initialized`, `notifications/cancelled`) return HTTP 204 with no body.
+
 ### Example MCP call
 
 ```bash
@@ -115,6 +127,22 @@ guardrails:
 ```
 
 See `config.yaml` for all options.
+
+### API Key Authentication
+
+Optionally protect the `/mcp` endpoint with a Bearer token. Set the `GRAPH_MCP_API_KEY` environment variable (or add it to `.env`):
+
+```bash
+GRAPH_MCP_API_KEY=my-secret-key
+```
+
+When set, all `/mcp` requests must include the header:
+
+```
+Authorization: Bearer my-secret-key
+```
+
+Requests without a valid key receive HTTP 401. Health (`/health`) and auth status (`/auth/status`) endpoints are never gated by the API key. When `GRAPH_MCP_API_KEY` is unset or empty, the `/mcp` endpoint is open access.
 
 ## Docker
 
