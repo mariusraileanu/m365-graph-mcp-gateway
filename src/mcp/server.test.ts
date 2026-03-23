@@ -171,3 +171,196 @@ describe('HTTP server — API key auth', () => {
     assert.equal(res.status, 200);
   });
 });
+
+describe('MCP spec compliance — methods', () => {
+  let server: http.Server;
+
+  beforeEach(async () => {
+    configApiKey = undefined;
+    startHttpServer(0);
+    server = getHttpServer()!;
+    await new Promise<void>((resolve) => {
+      if (server.listening) return resolve();
+      server.on('listening', resolve);
+    });
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()));
+    });
+  });
+
+  it('initialize returns protocolVersion, capabilities, serverInfo', async () => {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'test', version: '0.1' } },
+    });
+    const res = await makeRequest(server, { method: 'POST', path: '/mcp', headers: { 'Content-Type': 'application/json' }, body });
+    assert.equal(res.status, 200);
+    const parsed = JSON.parse(res.body);
+    assert.equal(parsed.jsonrpc, '2.0');
+    assert.equal(parsed.id, 1);
+    assert.equal(parsed.result.protocolVersion, '2025-03-26');
+    assert.deepEqual(parsed.result.capabilities, { tools: { listChanged: false } });
+    assert.equal(parsed.result.serverInfo.name, 'm365-graph-mcp-gateway');
+    assert.equal(parsed.result.serverInfo.version, '1.0.0');
+  });
+
+  it('ping returns empty result', async () => {
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 42, method: 'ping' });
+    const res = await makeRequest(server, { method: 'POST', path: '/mcp', headers: { 'Content-Type': 'application/json' }, body });
+    assert.equal(res.status, 200);
+    const parsed = JSON.parse(res.body);
+    assert.equal(parsed.id, 42);
+    assert.deepEqual(parsed.result, {});
+  });
+
+  it('unknown method returns -32601 with HTTP 200', async () => {
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'bogus/method' });
+    const res = await makeRequest(server, { method: 'POST', path: '/mcp', headers: { 'Content-Type': 'application/json' }, body });
+    assert.equal(res.status, 200);
+    const parsed = JSON.parse(res.body);
+    assert.equal(parsed.error.code, -32601);
+    assert.ok(parsed.error.message.includes('bogus/method'));
+  });
+
+  it('preserves null id in response', async () => {
+    const body = JSON.stringify({ jsonrpc: '2.0', id: null, method: 'ping' });
+    const res = await makeRequest(server, { method: 'POST', path: '/mcp', headers: { 'Content-Type': 'application/json' }, body });
+    assert.equal(res.status, 200);
+    const parsed = JSON.parse(res.body);
+    assert.equal(parsed.id, null);
+    assert.deepEqual(parsed.result, {});
+  });
+
+  it('preserves string id in response', async () => {
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 'req-abc', method: 'ping' });
+    const res = await makeRequest(server, { method: 'POST', path: '/mcp', headers: { 'Content-Type': 'application/json' }, body });
+    const parsed = JSON.parse(res.body);
+    assert.equal(parsed.id, 'req-abc');
+  });
+});
+
+describe('MCP spec compliance — notifications', () => {
+  let server: http.Server;
+
+  beforeEach(async () => {
+    configApiKey = undefined;
+    startHttpServer(0);
+    server = getHttpServer()!;
+    await new Promise<void>((resolve) => {
+      if (server.listening) return resolve();
+      server.on('listening', resolve);
+    });
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()));
+    });
+  });
+
+  it('notifications/initialized returns 204 with no body', async () => {
+    const body = JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' });
+    const res = await makeRequest(server, { method: 'POST', path: '/mcp', headers: { 'Content-Type': 'application/json' }, body });
+    assert.equal(res.status, 204);
+    assert.equal(res.body, '');
+  });
+
+  it('any notification (no id) returns 204', async () => {
+    const body = JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: 1 } });
+    const res = await makeRequest(server, { method: 'POST', path: '/mcp', headers: { 'Content-Type': 'application/json' }, body });
+    assert.equal(res.status, 204);
+    assert.equal(res.body, '');
+  });
+});
+
+describe('MCP spec compliance — JSON-RPC validation', () => {
+  let server: http.Server;
+
+  beforeEach(async () => {
+    configApiKey = undefined;
+    startHttpServer(0);
+    server = getHttpServer()!;
+    await new Promise<void>((resolve) => {
+      if (server.listening) return resolve();
+      server.on('listening', resolve);
+    });
+  });
+
+  afterEach(async () => {
+    await new Promise<void>((resolve, reject) => {
+      server.close((err) => (err ? reject(err) : resolve()));
+    });
+  });
+
+  it('invalid JSON returns -32700 parse error with HTTP 200', async () => {
+    const res = await makeRequest(server, {
+      method: 'POST',
+      path: '/mcp',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{not json',
+    });
+    assert.equal(res.status, 200);
+    const parsed = JSON.parse(res.body);
+    assert.equal(parsed.error.code, -32700);
+    assert.equal(parsed.id, null);
+  });
+
+  it('missing jsonrpc field returns -32600', async () => {
+    const body = JSON.stringify({ id: 1, method: 'ping' });
+    const res = await makeRequest(server, { method: 'POST', path: '/mcp', headers: { 'Content-Type': 'application/json' }, body });
+    assert.equal(res.status, 200);
+    const parsed = JSON.parse(res.body);
+    assert.equal(parsed.error.code, -32600);
+    assert.ok(parsed.error.message.includes('jsonrpc'));
+  });
+
+  it('wrong jsonrpc version returns -32600', async () => {
+    const body = JSON.stringify({ jsonrpc: '1.0', id: 1, method: 'ping' });
+    const res = await makeRequest(server, { method: 'POST', path: '/mcp', headers: { 'Content-Type': 'application/json' }, body });
+    const parsed = JSON.parse(res.body);
+    assert.equal(parsed.error.code, -32600);
+  });
+
+  it('non-object body (array) returns -32600', async () => {
+    const body = JSON.stringify([{ jsonrpc: '2.0', id: 1, method: 'ping' }]);
+    const res = await makeRequest(server, { method: 'POST', path: '/mcp', headers: { 'Content-Type': 'application/json' }, body });
+    assert.equal(res.status, 200);
+    const parsed = JSON.parse(res.body);
+    assert.equal(parsed.error.code, -32600);
+  });
+
+  it('invalid id type (boolean) returns -32600', async () => {
+    const body = JSON.stringify({ jsonrpc: '2.0', id: true, method: 'ping' });
+    const res = await makeRequest(server, { method: 'POST', path: '/mcp', headers: { 'Content-Type': 'application/json' }, body });
+    const parsed = JSON.parse(res.body);
+    assert.equal(parsed.error.code, -32600);
+    assert.ok(parsed.error.message.includes('id'));
+  });
+
+  it('invalid id type (object) returns -32600', async () => {
+    const body = JSON.stringify({ jsonrpc: '2.0', id: {}, method: 'ping' });
+    const res = await makeRequest(server, { method: 'POST', path: '/mcp', headers: { 'Content-Type': 'application/json' }, body });
+    const parsed = JSON.parse(res.body);
+    assert.equal(parsed.error.code, -32600);
+  });
+
+  it('missing method field returns -32600', async () => {
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1 });
+    const res = await makeRequest(server, { method: 'POST', path: '/mcp', headers: { 'Content-Type': 'application/json' }, body });
+    const parsed = JSON.parse(res.body);
+    assert.equal(parsed.error.code, -32600);
+    assert.ok(parsed.error.message.includes('method'));
+  });
+
+  it('non-string method returns -32600', async () => {
+    const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 123 });
+    const res = await makeRequest(server, { method: 'POST', path: '/mcp', headers: { 'Content-Type': 'application/json' }, body });
+    const parsed = JSON.parse(res.body);
+    assert.equal(parsed.error.code, -32600);
+  });
+});

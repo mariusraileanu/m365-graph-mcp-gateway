@@ -24,16 +24,27 @@ export interface ToolSpec {
   run: (params: Record<string, unknown>) => Promise<ToolResult>;
 }
 
+/** JSON-RPC 2.0 request (has id — expects a response). */
 export interface MCPRequest {
   jsonrpc: '2.0';
-  id: string | number;
+  id: string | number | null;
   method: string;
   params?: Record<string, unknown>;
 }
 
+/** JSON-RPC 2.0 notification (no id — no response expected). */
+export interface MCPNotification {
+  jsonrpc: '2.0';
+  method: string;
+  params?: Record<string, unknown>;
+}
+
+/** Inbound JSON-RPC message — either a request or a notification. */
+export type MCPMessage = MCPRequest | MCPNotification;
+
 export interface MCPResponse {
   jsonrpc: '2.0';
-  id: string | number;
+  id: string | number | null;
   result?: unknown;
   error?: { code: number; message: string; data?: unknown };
 }
