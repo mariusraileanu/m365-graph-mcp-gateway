@@ -1,13 +1,12 @@
 # m365-graph-mcp-gateway
 
-Production-ready MCP gateway for Microsoft 365 Graph API with MSAL authentication, guardrails, and Copilot Retrieval API integration.
+Production-ready MCP gateway for Microsoft 365 Graph API with MSAL authentication and guardrails.
 
 ## Features
 
 - **Mail**: list, search, get, draft, reply, reply-all, send (confirm-gated)
 - **Calendar**: list, get, free-slots, create (Teams meetings + agenda), respond, cancel
 - **Files**: SharePoint/OneDrive search and content extraction
-- **Copilot Retrieval API**: AI-grounded semantic search across SharePoint and OneDrive
 - **Cross-entity search**: find across mail, files, and calendar events
 - **Guardrails**: email domain allowlist, attachment limits, HTML sanitization, audit logging
 - **Safety**: write operations require explicit `confirm=true`
@@ -106,13 +105,9 @@ curl -s http://localhost:3000/mcp -d '{
 
 ## Configuration
 
-`config.yaml` controls scopes, guardrails, output limits, and the Copilot Retrieval API:
+`config.yaml` controls scopes, guardrails, and output limits:
 
 ```yaml
-retrieval:
-  enabled: true
-  dataSource: 'sharePoint' # or "oneDriveBusiness"
-
 guardrails:
   email:
     allowDomains:
@@ -382,15 +377,15 @@ make smoke-user U=jdoe
 
 This scales up the container, runs a built-in smoke test suite inside it, and scales back down. The smoke test validates 7 checks:
 
-| #   | Check         | What it tests                                                            |
-| --- | ------------- | ------------------------------------------------------------------------ |
-| 1   | `health`      | `GET /health` returns status OK and authenticated user                   |
-| 2   | `tools/list`  | MCP `tools/list` returns available tools                                 |
-| 3   | `auth whoami` | Auth tool returns the signed-in user identity                            |
-| 4   | `find mail`   | Graph API mail search works                                              |
-| 5   | `find events` | Graph API calendar search works                                          |
-| 6   | `find files`  | Graph API / Copilot Retrieval file search works (warning if unavailable) |
-| 7   | `audit_list`  | Audit log retrieval works                                                |
+| #   | Check         | What it tests                                          |
+| --- | ------------- | ------------------------------------------------------ |
+| 1   | `health`      | `GET /health` returns status OK and authenticated user |
+| 2   | `tools/list`  | MCP `tools/list` returns available tools               |
+| 3   | `auth whoami` | Auth tool returns the signed-in user identity          |
+| 4   | `find mail`   | Graph API mail search works                            |
+| 5   | `find events` | Graph API calendar search works                        |
+| 6   | `find files`  | Graph API file search works                            |
+| 7   | `audit_list`  | Audit log retrieval works                              |
 
 Expected output:
 
@@ -399,7 +394,7 @@ MCP Gateway — Remote Smoke Test
 
 ▸ Health check
   ✓ health
-    {"status":"ok","user":"jdoe@example.com","retrieval":{"enabled":true}}
+    {"status":"ok","user":"jdoe@example.com"}
 ▸ tools/list
   ✓ tools/list
 ▸ auth whoami
@@ -593,7 +588,7 @@ The `azure.sh` script is fully idempotent — every resource creation is guarded
 src/
   auth/         MSAL login, token cache, Graph client
   config/       YAML config loader with Zod validation
-  graph/        Graph API modules (calendar, files, mail, retrieval)
+  graph/        Graph API modules (calendar, files, mail)
   mcp/          HTTP + stdio MCP JSON-RPC server
   tools/        MCP tool definitions (find, get, compose-email, etc.)
   utils/        Helpers, audit logger, types, structured logging, smoke test

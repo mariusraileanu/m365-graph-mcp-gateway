@@ -76,8 +76,6 @@ export function fail(errorCode: string, message: string, details?: Record<string
 
 export function normalizeError(err: unknown): { code: string; message: string } {
   const message = err instanceof Error ? err.message : String(err);
-  if (message.startsWith('RETRIEVAL_ERROR')) return { code: 'RETRIEVAL_ERROR', message };
-  if (message.startsWith('RETRIEVAL_DISABLED')) return { code: 'RETRIEVAL_DISABLED', message };
   if (message.startsWith('AUTH_REQUIRED')) return { code: 'AUTH_REQUIRED', message };
   if (message.startsWith('AUTH_EXPIRED')) return { code: 'AUTH_EXPIRED', message };
   if (message.includes('not in allowlist')) return { code: 'FORBIDDEN', message };
@@ -131,30 +129,4 @@ export function sanitizeEmailHtml(html: string): string {
     .replace(/<form[\s\S]*?<\/form>/gi, '')
     .replace(/\son\w+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
     .replace(/javascript\s*:/gi, 'blocked:');
-}
-
-/** Extract citation-shaped objects from a nested WorkIQ response. */
-export function collectCitations(node: unknown, citations: Array<Record<string, unknown>>, depth = 0): void {
-  if (depth > 6 || node === null || node === undefined) return;
-  if (Array.isArray(node)) {
-    for (const item of node) collectCitations(item, citations, depth + 1);
-    return;
-  }
-  if (typeof node !== 'object') return;
-
-  const obj = node as Record<string, unknown>;
-  const keys = Object.keys(obj).map((k) => k.toLowerCase());
-  const hasCitationShape = keys.includes('title') || keys.includes('url') || keys.includes('source') || keys.includes('reference');
-  if (hasCitationShape) {
-    const citation: Record<string, unknown> = {};
-    if (typeof obj.title === 'string') citation.title = obj.title;
-    if (typeof obj.url === 'string') citation.url = obj.url;
-    if (typeof obj.source === 'string') citation.source = obj.source;
-    if (typeof obj.reference === 'string') citation.reference = obj.reference;
-    if (Object.keys(citation).length > 0) citations.push(citation);
-  }
-
-  for (const value of Object.values(obj)) {
-    collectCitations(value, citations, depth + 1);
-  }
 }

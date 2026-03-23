@@ -40,9 +40,5 @@ search:
 calendar:
   defaultTimezone: 'UTC'
 
-retrieval:
-  enabled: true
-  dataSource: 'sharePoint'
-
 storage:
   tokenPath: 'graph-mcp/tokens'

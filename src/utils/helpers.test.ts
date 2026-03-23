@@ -11,7 +11,6 @@ import {
   stripHtml,
   escapeHtml,
   sanitizeEmailHtml,
-  collectCitations,
 } from './helpers.js';
 
 describe('resolveStoragePath', () => {
@@ -151,34 +150,5 @@ describe('sanitizeEmailHtml', () => {
   });
   it('preserves safe HTML', () => {
     assert.equal(sanitizeEmailHtml('<p>Hello <b>world</b></p>'), '<p>Hello <b>world</b></p>');
-  });
-});
-
-describe('collectCitations', () => {
-  it('extracts citations from nested object', () => {
-    const data = {
-      results: [
-        { title: 'Doc A', url: 'https://example.com/a' },
-        { title: 'Doc B', source: 'SharePoint' },
-      ],
-    };
-    const citations: Array<Record<string, unknown>> = [];
-    collectCitations(data, citations);
-    assert.equal(citations.length, 2);
-    assert.equal(citations[0]?.title, 'Doc A');
-    assert.equal(citations[1]?.source, 'SharePoint');
-  });
-  it('respects depth limit', () => {
-    let nested: Record<string, unknown> = { title: 'deep' };
-    for (let i = 0; i < 10; i++) nested = { child: nested };
-    const citations: Array<Record<string, unknown>> = [];
-    collectCitations(nested, citations);
-    assert.equal(citations.length, 0);
-  });
-  it('handles null/undefined gracefully', () => {
-    const citations: Array<Record<string, unknown>> = [];
-    collectCitations(null, citations);
-    collectCitations(undefined, citations);
-    assert.equal(citations.length, 0);
   });
 });

@@ -75,7 +75,7 @@ show the user what will happen before committing.
 
 ---
 
-## Tools Reference (10 tools)
+## Tools Reference (8 tools)
 
 ### 1. `auth`
 
@@ -111,6 +111,7 @@ Search across Microsoft 365 — mail, files, and calendar events.
 | Parameter      | Type     | Required | Description                                                                                                       |
 | -------------- | -------- | -------- | ----------------------------------------------------------------------------------------------------------------- |
 | `query`        | string   | yes      | Search query (min 1 char). Natural language: `"emails from John about Q4"`, `"budget spreadsheets"`, `"meetings"` |
+| `kql`          | string   | no       | Raw KQL query passed directly to Graph Search API. When provided, overrides `query` for the search request.       |
 | `entity_types` | string[] | no       | Filter to specific types: `"mail"`, `"files"`, `"events"`. Default: all three.                                    |
 | `start_date`   | string   | no       | ISO 8601 datetime for date-range event queries. Example: `"2026-02-23T00:00:00"`                                  |
 | `end_date`     | string   | no       | ISO 8601 datetime. Required alongside `start_date`. Example: `"2026-02-24T00:00:00"`                              |
@@ -140,7 +141,7 @@ There are two modes for event search, selected automatically:
 
 #### File search behavior
 
-Uses Copilot Retrieval API (semantic search) with automatic fallback to Graph Search API.
+Uses Graph Search API.
 
 #### Response notes
 
@@ -459,86 +460,7 @@ Respond to a meeting invitation or cancel a meeting you organized. Requires
 
 ---
 
-### 8. `summarize`
-
-AI-powered summarization of a document, email thread, or any M365 entity.
-
-| Parameter   | Type    | Required | Description                                                           |
-| ----------- | ------- | -------- | --------------------------------------------------------------------- |
-| `query`     | string  | no\*     | Search query to find content to summarize                             |
-| `drive_id`  | string  | no\*     | OneDrive/SharePoint drive ID for direct file reference                |
-| `item_id`   | string  | no\*     | File item ID (used with `drive_id`)                                   |
-| `focus`     | string  | no       | Focus area for the summary (e.g. "action items", "financial figures") |
-| `max_chars` | integer | no       | Max output chars (1-50000)                                            |
-
-\*Provide either `query` OR both `drive_id` + `item_id`.
-
-**Example** — summarize a document by search:
-
-```json
-{
-  "name": "summarize",
-  "arguments": {
-    "query": "Q4 budget report",
-    "focus": "key variances and action items"
-  }
-}
-```
-
-**Example** — summarize a specific file:
-
-```json
-{
-  "name": "summarize",
-  "arguments": {
-    "drive_id": "b!abc123...",
-    "item_id": "01ABC...",
-    "focus": "executive summary"
-  }
-}
-```
-
----
-
-### 9. `prepare_meeting`
-
-Gather context for an upcoming meeting: related emails, files, past meetings,
-and attendee context. Returns a briefing package.
-
-| Parameter   | Type    | Required | Description                                                         |
-| ----------- | ------- | -------- | ------------------------------------------------------------------- |
-| `event_id`  | string  | no\*     | Event ID to prepare for (fetches subject + attendees automatically) |
-| `subject`   | string  | no\*     | Meeting subject (if you don't have the event ID)                    |
-| `max_chars` | integer | no       | Max output chars (1-50000)                                          |
-
-\*Provide either `event_id` or `subject`.
-
-**Example**:
-
-```json
-{
-  "name": "prepare_meeting",
-  "arguments": { "event_id": "AAMk..." }
-}
-```
-
-**Response**:
-
-```json
-{
-  "provider": "copilot-retrieval",
-  "meeting_subject": "Sprint Planning",
-  "meeting": { "id": "AAMk...", "subject": "Sprint Planning", "start": "...", "...": "..." },
-  "attendees": ["Jane Doe", "Bob Smith"],
-  "briefing": "Meeting Briefing: \"Sprint Planning\"\n\nRelated Documents:\n...",
-  "truncated": false,
-  "citations": [{ "title": "Sprint Board", "url": "https://..." }]
-}
-```
-
----
-
-### 10. `audit_list`
+### 8. `audit_list`
 
 List recent audit log entries. Records all write actions and blocked attempts.
 
@@ -614,7 +536,12 @@ List recent audit log entries. Records all write actions and blocked attempts.
 ### "Prepare me for my 2pm meeting"
 
 1. Find the meeting: `find` with `entity_types: ["events"]`, `start_date`/`end_date` around 2pm
-2. Prepare: `prepare_meeting` with the `event_id` from step 1
+2. Get full details: `get_event` with the `event_id` from step 1, `include_full: true`
+3. Search for context: `find` with the meeting subject/attendees to locate related emails and files
+
+> **Note**: Briefing composition (combining meeting details, related docs, and
+> attendee context into a coherent preparation summary) is handled by the
+> consuming LLM layer, not this gateway.
 
 ### "Schedule a 30-min Teams call with Bob tomorrow morning"
 
@@ -644,8 +571,6 @@ All calendar/event operations use a **configured default timezone** (currently
   configured timezone. The response includes a `timezone` field indicating which
   timezone was used.
 - **`get_event`** — event start/end times are returned in the configured timezone.
-- **`prepare_meeting`** — event details fetched for briefings use the configured
-  timezone.
 - **`schedule_meeting`** — when using auto free-slot finding, the `timezone`
   parameter defaults to the configured timezone. When providing explicit `start`
   and `end`, include the UTC offset in the ISO 8601 string (e.g.

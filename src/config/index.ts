@@ -57,12 +57,6 @@ const ConfigSchema = z.object({
       tokenPath: z.string().default('graph-mcp/tokens'),
     })
     .default({}),
-  retrieval: z
-    .object({
-      enabled: z.boolean().default(true),
-      dataSource: z.enum(['sharePoint', 'oneDriveBusiness']).default('sharePoint'),
-    })
-    .default({}),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -73,7 +67,6 @@ export type OutputConfig = Config['output'];
 export type SearchConfig = Config['search'];
 export type CalendarConfig = Config['calendar'];
 export type StorageConfig = Config['storage'];
-export type RetrievalConfig = Config['retrieval'];
 
 function expandEnvVars(value: string): string {
   return value.replace(/\$\{([^}]+)\}/g, (_, key) => {

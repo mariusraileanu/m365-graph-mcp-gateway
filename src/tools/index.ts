@@ -4,8 +4,6 @@ import { getTools } from './get.js';
 import { composeEmailTools } from './compose-email.js';
 import { scheduleMeetingTools } from './schedule-meeting.js';
 import { respondMeetingTools } from './respond-meeting.js';
-import { summarizeTools } from './summarize.js';
-import { prepareMeetingTools } from './prepare-meeting.js';
 import { auditTools } from './audit.js';
 import { fail, normalizeError } from '../utils/helpers.js';
 import type { ToolSpec, ToolResult } from '../utils/types.js';
@@ -17,8 +15,6 @@ export const tools: ToolSpec[] = [
   ...composeEmailTools,
   ...scheduleMeetingTools,
   ...respondMeetingTools,
-  ...summarizeTools,
-  ...prepareMeetingTools,
   ...auditTools,
 ];
 

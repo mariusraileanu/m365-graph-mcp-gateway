@@ -2,7 +2,6 @@ import http from 'http';
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { currentUser, isLoggedIn } from '../auth/index.js';
 import { tools, callTool } from '../tools/index.js';
-import { loadConfig } from '../config/index.js';
 import { log } from '../utils/log.js';
 import type { MCPRequest, MCPResponse } from '../utils/types.js';
 
@@ -90,7 +89,7 @@ export function startHttpServer(port = 3000): void {
     // --- Health ---
     if (req.method === 'GET' && url.pathname === '/health') {
       res.writeHead(200, jsonHeaders());
-      res.end(JSON.stringify({ status: 'ok', user: await currentUser(), retrieval: { enabled: loadConfig().retrieval.enabled } }));
+      res.end(JSON.stringify({ status: 'ok', user: await currentUser() }));
       return;
     }
 
@@ -100,7 +99,6 @@ export function startHttpServer(port = 3000): void {
       res.end(
         JSON.stringify({
           graph: { authenticated: await isLoggedIn(), user: await currentUser() },
-          retrieval: { enabled: loadConfig().retrieval.enabled, dataSource: loadConfig().retrieval.dataSource },
         }),
       );
       return;
