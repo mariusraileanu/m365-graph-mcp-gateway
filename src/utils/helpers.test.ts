@@ -11,6 +11,7 @@ import {
   stripHtml,
   escapeHtml,
   sanitizeEmailHtml,
+  escapeODataString,
 } from './helpers.js';
 
 describe('resolveStoragePath', () => {
@@ -150,5 +151,31 @@ describe('sanitizeEmailHtml', () => {
   });
   it('preserves safe HTML', () => {
     assert.equal(sanitizeEmailHtml('<p>Hello <b>world</b></p>'), '<p>Hello <b>world</b></p>');
+  });
+});
+
+describe('escapeODataString', () => {
+  it('returns plain strings unchanged', () => {
+    assert.equal(escapeODataString('hello'), 'hello');
+  });
+
+  it('escapes single quotes by doubling them', () => {
+    assert.equal(escapeODataString("it's"), "it''s");
+  });
+
+  it('escapes multiple single quotes', () => {
+    assert.equal(escapeODataString("it's a 'test'"), "it''s a ''test''");
+  });
+
+  it('handles empty string', () => {
+    assert.equal(escapeODataString(''), '');
+  });
+
+  it('handles string with only single quotes', () => {
+    assert.equal(escapeODataString("'''"), "''''''");
+  });
+
+  it('does not alter double quotes or other characters', () => {
+    assert.equal(escapeODataString('hello "world" <>&'), 'hello "world" <>&');
   });
 });

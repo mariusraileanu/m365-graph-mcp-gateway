@@ -16,6 +16,11 @@ let fetchResponse: { ok: boolean; status: number; buffer: Buffer; contentType: s
 };
 const fetchCalls: Array<{ url: string }> = [];
 
+// Cache tracking
+const cacheGetCalls: Array<{ key: string }> = [];
+const cacheSetCalls: Array<{ key: string; value: unknown; ttl: number }> = [];
+const cacheStore = new Map<string, unknown>();
+
 // Override global fetch
 const _originalFetch = globalThis.fetch;
 globalThis.fetch = (async (input: string | URL | Request) => {
@@ -77,6 +82,22 @@ mock.module('../config/index.js', {
       calendar: { defaultTimezone: 'UTC' },
       storage: { tokenPath: 'tokens' },
     }),
+  },
+});
+
+mock.module('../utils/cache.js', {
+  namedExports: {
+    graphCache: {
+      get: (key: string) => {
+        cacheGetCalls.push({ key });
+        return cacheStore.get(key);
+      },
+      set: (key: string, value: unknown, ttl: number) => {
+        cacheSetCalls.push({ key, value, ttl });
+        cacheStore.set(key, value);
+      },
+      clear: () => cacheStore.clear(),
+    },
   },
 });
 
@@ -166,6 +187,9 @@ function resetTracking() {
   pickEventCalls.length = 0;
   pickFileCalls.length = 0;
   fetchCalls.length = 0;
+  cacheGetCalls.length = 0;
+  cacheSetCalls.length = 0;
+  cacheStore.clear();
   loggedIn = true;
   graphGetResponse = {};
   fetchResponse = { ok: true, status: 200, buffer: Buffer.from('hello world'), contentType: 'text/plain' };
@@ -434,6 +458,113 @@ describe('get_file_content — error handling', () => {
   });
 });
 
-// Cleanup: restore global fetch
-// (Not strictly necessary for test runner, but good hygiene)
-// globalThis.fetch = originalFetch;
+// ── Cache integration tests ──────────────────────────────────────────────────
+
+describe('get_email — cache', () => {
+  beforeEach(() => resetTracking());
+
+  it('populates cache on first call (miss)', async () => {
+    graphGetResponse = { id: 'msg-c1', subject: 'Cached' };
+    await callGetEmail({ message_id: 'msg-c1' });
+
+    assert.equal(cacheGetCalls.length, 1);
+    assert.equal(cacheGetCalls[0]!.key, 'email:msg-c1');
+    assert.equal(cacheSetCalls.length, 1);
+    assert.equal(cacheSetCalls[0]!.key, 'email:msg-c1');
+    assert.equal(graphGetCalls.length, 1, 'should call Graph API on miss');
+  });
+
+  it('serves from cache on second call (hit)', async () => {
+    graphGetResponse = { id: 'msg-c2', subject: 'Cached' };
+    await callGetEmail({ message_id: 'msg-c2' });
+    // Reset only Graph tracking, keep cache populated
+    graphGetCalls.length = 0;
+    cacheGetCalls.length = 0;
+    cacheSetCalls.length = 0;
+
+    await callGetEmail({ message_id: 'msg-c2' });
+
+    assert.equal(cacheGetCalls.length, 1);
+    assert.equal(graphGetCalls.length, 0, 'should NOT call Graph API on cache hit');
+    assert.equal(cacheSetCalls.length, 0, 'should NOT set cache on hit');
+  });
+});
+
+describe('get_event — cache', () => {
+  beforeEach(() => resetTracking());
+
+  it('populates cache on first call (miss)', async () => {
+    graphGetResponse = { id: 'evt-c1', subject: 'Meeting' };
+    await callGetEvent({ event_id: 'evt-c1' });
+
+    assert.equal(cacheSetCalls.length, 1);
+    assert.equal(cacheSetCalls[0]!.key, 'event:evt-c1');
+    assert.equal(graphGetCalls.length, 1);
+  });
+
+  it('serves from cache on second call (hit)', async () => {
+    graphGetResponse = { id: 'evt-c2', subject: 'Standup' };
+    await callGetEvent({ event_id: 'evt-c2' });
+    graphGetCalls.length = 0;
+    cacheGetCalls.length = 0;
+    cacheSetCalls.length = 0;
+
+    await callGetEvent({ event_id: 'evt-c2' });
+
+    assert.equal(graphGetCalls.length, 0, 'should NOT call Graph API on cache hit');
+    assert.equal(cacheSetCalls.length, 0);
+  });
+});
+
+describe('get_email_thread — cache', () => {
+  beforeEach(() => resetTracking());
+
+  it('populates cache on first call (miss)', async () => {
+    graphGetResponse = { value: [{ id: 'msg-1', subject: 'Thread' }] };
+    await callGetEmailThread({ conversation_id: 'conv-c1' });
+
+    // Cache key includes conversationId + include_full + top
+    assert.equal(cacheSetCalls.length, 1);
+    assert.ok(cacheSetCalls[0]!.key.startsWith('thread:conv-c1:'));
+    assert.equal(graphGetCalls.length, 1);
+  });
+
+  it('serves from cache on second identical call (hit)', async () => {
+    graphGetResponse = { value: [{ id: 'msg-1', subject: 'Thread' }] };
+    await callGetEmailThread({ conversation_id: 'conv-c2' });
+    graphGetCalls.length = 0;
+    cacheGetCalls.length = 0;
+    cacheSetCalls.length = 0;
+
+    await callGetEmailThread({ conversation_id: 'conv-c2' });
+
+    assert.equal(graphGetCalls.length, 0, 'should NOT call Graph API on cache hit');
+    assert.equal(cacheSetCalls.length, 0);
+  });
+});
+
+describe('get_file_metadata — cache', () => {
+  beforeEach(() => resetTracking());
+
+  it('populates cache on first call (miss)', async () => {
+    graphGetResponse = { id: 'item-c1', name: 'doc.xlsx', size: 100 };
+    await callGetFileMetadata({ drive_id: 'drv-1', item_id: 'item-c1' });
+
+    assert.equal(cacheSetCalls.length, 1);
+    assert.equal(cacheSetCalls[0]!.key, 'file:drv-1:item-c1');
+    assert.equal(graphGetCalls.length, 1);
+  });
+
+  it('serves from cache on second call (hit)', async () => {
+    graphGetResponse = { id: 'item-c2', name: 'report.pdf', size: 200 };
+    await callGetFileMetadata({ drive_id: 'drv-1', item_id: 'item-c2' });
+    graphGetCalls.length = 0;
+    cacheGetCalls.length = 0;
+    cacheSetCalls.length = 0;
+
+    await callGetFileMetadata({ drive_id: 'drv-1', item_id: 'item-c2' });
+
+    assert.equal(graphGetCalls.length, 0, 'should NOT call Graph API on cache hit');
+    assert.equal(cacheSetCalls.length, 0);
+  });
+});

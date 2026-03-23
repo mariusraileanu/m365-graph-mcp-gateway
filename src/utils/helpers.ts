@@ -17,6 +17,11 @@ export function resolveStoragePath(configPath: string): string {
   return path.resolve(process.cwd(), 'data', configPath);
 }
 
+/** Escape a value for use inside an OData single-quoted string literal. */
+export function escapeODataString(value: string): string {
+  return value.replace(/'/g, "''");
+}
+
 export function sanitizeForLogs(content: string): string {
   if (!loadConfig().guardrails.email.stripSensitiveFromLogs) return content;
   return content
