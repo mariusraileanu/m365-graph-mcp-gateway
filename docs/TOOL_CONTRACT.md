@@ -27,6 +27,9 @@ All calls use JSON-RPC 2.0:
 }
 ```
 
+**Request size limit**: The maximum request body is **1 MB** (1,048,576 bytes).
+Requests exceeding this limit receive HTTP **413 Request Entity Too Large**.
+
 ---
 
 ## Authentication
@@ -131,6 +134,24 @@ is **100 requests per 60-second window**. When exceeded, the server returns:
 Rate limiting is applied **after** API key authentication but **before** JSON-RPC
 processing. Health and auth status endpoints are not rate-limited.
 
+### Security Headers
+
+All HTTP responses include the following hardened headers:
+
+| Header                   | Value      |
+| ------------------------ | ---------- |
+| `X-Content-Type-Options` | `nosniff`  |
+| `X-Frame-Options`        | `DENY`     |
+| `Cache-Control`          | `no-store` |
+
+### HTTP Timeouts
+
+| Timeout            | Value | Description                              |
+| ------------------ | ----- | ---------------------------------------- |
+| Request timeout    | 180 s | Max wall-clock time for a single request |
+| Headers timeout    | 10 s  | Max time to receive request headers      |
+| Keep-alive timeout | 5 s   | Idle connection lifetime                 |
+
 ---
 
 ## JSON-RPC Validation
@@ -169,7 +190,8 @@ includes:
 | `status`      | `"ok"` or `"error"`                                  |
 | `error_code`  | JSON-RPC error code (only on errors)                 |
 
-Notifications log `method` only (no `id`, no duration since there's no response).
+Notifications (messages with no `id`) are **not** logged — only requests that
+produce a response are recorded.
 
 ---
 
@@ -193,14 +215,15 @@ Every `tools/call` response follows this contract:
 
 Errors use a `CODE: message` pattern:
 
-| Code               | Meaning                           |
-| ------------------ | --------------------------------- |
-| `AUTH_REQUIRED`    | Not logged in — call `auth` first |
-| `VALIDATION_ERROR` | Missing or invalid parameters     |
-| `FORBIDDEN`        | Recipient domain not in allowlist |
-| `NOT_FOUND`        | Resource not found                |
-| `UPSTREAM_ERROR`   | Microsoft Graph API error         |
-| `INTERNAL_ERROR`   | Unexpected server error           |
+| Code               | Meaning                                    |
+| ------------------ | ------------------------------------------ |
+| `AUTH_REQUIRED`    | Not logged in — call `auth` first          |
+| `AUTH_EXPIRED`     | Token expired — re-authenticate via `auth` |
+| `VALIDATION_ERROR` | Missing or invalid parameters              |
+| `FORBIDDEN`        | Recipient domain not in allowlist          |
+| `NOT_FOUND`        | Resource not found                         |
+| `UPSTREAM_ERROR`   | Microsoft Graph API error                  |
+| `INTERNAL_ERROR`   | Unexpected server error                    |
 
 ---
 
@@ -414,10 +437,13 @@ Uses Graph Search API.
   "results": [
     {
       "type": "file",
-      "title": "Budget_Q4_2026.xlsx",
-      "source_url": "https://contoso.sharepoint.com/...",
-      "author": "Jane Doe",
-      "resource_type": "driveItem",
+      "id": "01XYZ...",
+      "drive_id": "b!abc...",
+      "name": "Budget_Q4_2026.xlsx",
+      "path": "/drives/b!abc.../root:/Finance/Reports",
+      "modified_at": "2026-02-20T14:30:00Z",
+      "size": 45321,
+      "web_url": "https://contoso.sharepoint.com/...",
       "snippet": "Quarterly budget allocation and variance analysis..."
     }
   ]
@@ -448,8 +474,29 @@ Fetch a specific email by ID. Use after `find` to retrieve full details.
   "id": "AAMk...",
   "subject": "Q4 Budget Report",
   "from": { "address": "finance@contoso.com", "name": "Finance Team" },
+  "sent_at": "2026-02-20T14:25:00Z",
   "received_at": "2026-02-20T14:30:00Z",
   "is_read": true,
+  "body_preview": "Please find the attached Q4 budget report..."
+}
+```
+
+**Response** (full — `include_full: true`):
+
+```json
+{
+  "id": "AAMk...",
+  "subject": "Q4 Budget Report",
+  "from": { "address": "finance@contoso.com", "name": "Finance Team" },
+  "sent_at": "2026-02-20T14:25:00Z",
+  "received_at": "2026-02-20T14:30:00Z",
+  "is_read": true,
+  "body_preview": "Please find the attached Q4 budget report...",
+  "to": [{ "emailAddress": { "name": "Jane Doe", "address": "jane@contoso.com" } }],
+  "cc": [],
+  "conversation_id": "AAQk...",
+  "body_text": "Please find the attached Q4 budget report. Key highlights: ...",
+  "body_truncated": false,
   "web_link": "https://outlook.office365.com/owa/?itemid=..."
 }
 ```
@@ -581,21 +628,35 @@ date, web URL, and creator info.
 }
 ```
 
-**Response** (full):
+**Response** (minimal):
 
 ```json
 {
   "id": "01XYZ...",
-  "name": "Budget_Q4_2026.xlsx",
-  "size": 45321,
-  "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-  "web_url": "https://contoso.sharepoint.com/sites/Finance/Shared Documents/Budget_Q4_2026.xlsx",
-  "last_modified": "2026-02-20T14:30:00Z",
   "drive_id": "b!abc...",
-  "item_id": "01XYZ...",
-  "created_by": "Jane Doe",
-  "modified_by": "Bob Smith",
-  "parent_path": "/drives/b!abc.../root:/Finance/Reports"
+  "name": "Budget_Q4_2026.xlsx",
+  "path": "/drives/b!abc.../root:/Finance/Reports",
+  "modified_at": "2026-02-20T14:30:00Z",
+  "size": 45321,
+  "web_url": "https://contoso.sharepoint.com/sites/Finance/Shared Documents/Budget_Q4_2026.xlsx"
+}
+```
+
+**Response** (full — `include_full: true`):
+
+```json
+{
+  "id": "01XYZ...",
+  "drive_id": "b!abc...",
+  "name": "Budget_Q4_2026.xlsx",
+  "path": "/drives/b!abc.../root:/Finance/Reports",
+  "modified_at": "2026-02-20T14:30:00Z",
+  "size": 45321,
+  "web_url": "https://contoso.sharepoint.com/sites/Finance/Shared Documents/Budget_Q4_2026.xlsx",
+  "file": { "mimeType": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" },
+  "created_by": { "user": { "displayName": "Jane Doe" } },
+  "modified_by": { "user": { "displayName": "Bob Smith" } },
+  "parent_reference": { "driveId": "b!abc...", "path": "/drives/b!abc.../root:/Finance/Reports" }
 }
 ```
 
@@ -664,16 +725,23 @@ as base64-encoded strings. Maximum file size: 10 MB.
 
 Compose an email: draft, send, reply, or reply-all. Write operations require `confirm=true`.
 
-| Parameter         | Type               | Required            | Description                                                                   |
-| ----------------- | ------------------ | ------------------- | ----------------------------------------------------------------------------- |
-| `mode`            | enum               | yes                 | `"draft"`, `"send"`, `"reply"`, `"reply_all"`                                 |
-| `to`              | string or string[] | for draft/send      | Recipient email(s). Comma-separated string or array.                          |
-| `subject`         | string             | for draft/send      | Email subject line                                                            |
-| `body_html`       | string             | yes                 | Email body (HTML). Sanitized server-side.                                     |
-| `message_id`      | string             | for reply/reply_all | ID of the message to reply to                                                 |
-| `attachments`     | object[]           | no                  | Inline attachments: `{ name, content_base64, content_type }`                  |
-| `attachment_refs` | object[]           | no                  | M365 file references: `{ drive_id, item_id, name }`                           |
-| `confirm`         | boolean            | no                  | `true` to execute send/reply. Without it, creates a draft or returns preview. |
+| Parameter         | Type               | Required            | Description                                                                                              |
+| ----------------- | ------------------ | ------------------- | -------------------------------------------------------------------------------------------------------- |
+| `mode`            | enum               | yes                 | `"draft"`, `"send"`, `"reply"`, `"reply_all"`                                                            |
+| `to`              | string or string[] | for draft/send      | Recipient email(s). Comma-separated string or array.                                                     |
+| `subject`         | string             | for draft/send      | Email subject line                                                                                       |
+| `body_html`       | string             | yes                 | Email body (HTML). Sanitized server-side.                                                                |
+| `message_id`      | string             | for reply/reply_all | ID of the message to reply to                                                                            |
+| `attachments`     | object[]           | no                  | Inline attachments: `{ name, content_base64, content_type }`                                             |
+| `attachment_refs` | object[]           | no                  | M365 file references: `{ drive_id, item_id, name }`                                                      |
+| `confirm`         | boolean            | no                  | `true` to execute send/reply. Without it, `send` returns a preview; `reply`/`reply_all` creates a draft. |
+
+#### Attachment limits
+
+- Maximum **10** attachments per email (inline + refs combined)
+- Maximum **5 MB** per individual attachment
+- Maximum **10 MB** total across all attachments
+- Exceeding any limit returns `VALIDATION_ERROR`
 
 **Example** — send an email:
 
@@ -704,9 +772,19 @@ Compose an email: draft, send, reply, or reply-all. Write operations require `co
 }
 ```
 
-> **Guardrail**: all recipient addresses in `to` are checked against the
-> [Domain Allowlist](#domain-allowlist). If any domain is not permitted, the
-> tool returns `FORBIDDEN` before creating the draft or sending.
+> **Guardrail**: for `draft` and `send` modes, all recipient addresses in `to`
+> are checked against the [Domain Allowlist](#domain-allowlist). If any domain
+> is not permitted, the tool returns `FORBIDDEN` before creating the draft or
+> sending. Reply modes (`reply`, `reply_all`) are **not** domain-checked — they
+> reply to the existing conversation's recipients.
+>
+> **Confirm behavior by mode**:
+>
+> - `send` without `confirm` — returns a `requires_confirmation` preview
+> - `send` with `confirm: true` — sends immediately
+> - `reply`/`reply_all` without `confirm` — creates a draft in the user's mailbox
+> - `reply`/`reply_all` with `confirm: true` — sends the reply immediately
+> - `draft` — always creates a draft (no `confirm` needed)
 
 ---
 
@@ -929,8 +1007,8 @@ List recent audit log entries. Records all write actions and blocked attempts.
 
 ## Timezone Handling
 
-All calendar/event operations use a **configured default timezone** (currently
-`America/New_York` / UTC-5). This affects:
+All calendar/event operations use a **configured default timezone** (set in
+`config.yaml` under `calendar.defaultTimezone`; defaults to `UTC`). This affects:
 
 - **`find`** (date-range mode) — event times in results are returned in the
   configured timezone. The response includes a `timezone` field indicating which
@@ -944,10 +1022,12 @@ All calendar/event operations use a **configured default timezone** (currently
 The default timezone is set in the gateway's `config.yaml` under
 `calendar.defaultTimezone` using IANA timezone names (e.g. `America/New_York`,
 `Europe/London`, `Asia/Tokyo`). The gateway maps IANA names to the Windows
-timezone names required by the Graph API internally.
+timezone names required by the Graph API internally. Deployments may override
+this value per environment.
 
 **Agent guidance**: When the user says "9am" without specifying a timezone, use
-the default timezone offset. For America/New_York, that means `-05:00`.
+the configured default timezone offset. If the default is `UTC`, use `+00:00`.
+If it is `America/New_York`, use `-05:00` (standard) or `-04:00` (DST).
 
 ---
 
@@ -959,7 +1039,26 @@ sender/organizer, timestamps, links, short snippets).
 Pass `include_full=true` on `get_email`, `get_event`, `get_email_thread`, and
 `get_file_metadata` to expand:
 
-- **Email**: full body HTML, all recipients (to, cc), conversation ID
+- **Email**: full body text, all recipients (to, cc), conversation ID, web link
 - **Event**: full attendee list with response status, body preview, online meeting details
 - **Email thread**: full body and recipients for each message in the thread
-- **File metadata**: parent path, created/modified by details
+- **File metadata**: file object (with mimeType), created/modified by (Graph objects), parent reference
+
+---
+
+## Caching
+
+Read-only `get_*` tools use a short-lived in-memory micro-cache to reduce
+redundant Graph API calls during multi-step agent workflows.
+
+| Tool                | Cache Key                                      | TTL  |
+| ------------------- | ---------------------------------------------- | ---- |
+| `get_email`         | `email:{message_id}`                           | 30 s |
+| `get_event`         | `event:{event_id}`                             | 30 s |
+| `get_email_thread`  | `thread:{conversationId}:{include_full}:{top}` | 30 s |
+| `get_file_metadata` | `file:{drive_id}:{item_id}`                    | 30 s |
+
+- `find` results and `get_file_content` downloads are **not** cached.
+- Write operations (`compose_email`, `schedule_meeting`, `respond_to_meeting`)
+  are never cached.
+- Maximum 500 cache entries; oldest evicted when full.
