@@ -219,6 +219,25 @@ show the user what will happen before committing.
 
 ---
 
+## Domain Allowlist
+
+All outbound recipient/attendee email addresses are checked against a
+configurable domain allowlist before any email is sent or meeting is scheduled.
+
+- **Configuration**: `guardrails.email.allowDomains` in `config.yaml`
+- **Pattern matching**: supports exact domains (`contoso.com`) and wildcard
+  suffixes (`*.contoso.com` matches `contoso.com` and all subdomains)
+- **Error**: returns `FORBIDDEN` with message
+  `"Domain @example.com is not in allowlist"` if no pattern matches
+- **Applies to**: `compose_email` (all recipients in `to`), `schedule_meeting`
+  (all attendees)
+- **Runtime override**: set the `GRAPH_MCP_ALLOW_DOMAINS` environment variable
+  to a JSON array of domain patterns (e.g.
+  `["*.contoso.com", "*.fabrikam.com"]`). When present, this overrides the
+  YAML list entirely.
+
+---
+
 ## Tools Reference (11 tools)
 
 ### 1. `auth`
@@ -534,6 +553,11 @@ oldest-first.
 }
 ```
 
+> **Implementation note**: messages are sorted client-side by
+> `receivedDateTime` ascending (oldest-first). Exchange Online does not support
+> combining `$filter` on `conversationId` with `$orderby`, so sorting is
+> performed after retrieval.
+
 ---
 
 ### 6. `get_file_metadata`
@@ -680,6 +704,10 @@ Compose an email: draft, send, reply, or reply-all. Write operations require `co
 }
 ```
 
+> **Guardrail**: all recipient addresses in `to` are checked against the
+> [Domain Allowlist](#domain-allowlist). If any domain is not permitted, the
+> tool returns `FORBIDDEN` before creating the draft or sending.
+
 ---
 
 ### 9. `schedule_meeting`
@@ -722,6 +750,10 @@ finding. Supports Teams meetings and agendas. Requires `confirm=true`.
   }
 }
 ```
+
+> **Guardrail**: all attendee addresses are checked against the
+> [Domain Allowlist](#domain-allowlist). If any domain is not permitted, the
+> tool returns `FORBIDDEN` before creating the meeting.
 
 ---
 

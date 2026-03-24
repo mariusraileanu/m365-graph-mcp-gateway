@@ -114,6 +114,21 @@ export function loadConfig(): Config {
   const parsed = yaml.parse(fileContents);
   const expanded = expandEnvVarsInObject(parsed as Record<string, unknown>);
 
+  // Override allowDomains from env var if present (JSON array, e.g. from Key Vault)
+  const envDomains = process.env.GRAPH_MCP_ALLOW_DOMAINS;
+  if (envDomains) {
+    try {
+      const domains = JSON.parse(envDomains) as string[];
+      if (!Array.isArray(domains)) throw new TypeError('Expected JSON array');
+      const g = expanded as Record<string, Record<string, Record<string, unknown>>>;
+      g.guardrails ??= {} as Record<string, Record<string, unknown>>;
+      g.guardrails.email ??= {} as Record<string, unknown>;
+      g.guardrails.email.allowDomains = domains;
+    } catch (e) {
+      throw new Error(`Invalid GRAPH_MCP_ALLOW_DOMAINS — expected JSON array of strings: ${e}`);
+    }
+  }
+
   const result = ConfigSchema.safeParse(expanded);
   if (!result.success) {
     const issues = result.error.issues.map((i) => `  - ${i.path.join('.')}: ${i.message}`).join('\n');

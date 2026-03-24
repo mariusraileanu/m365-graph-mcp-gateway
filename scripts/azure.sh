@@ -55,6 +55,7 @@ APP_PREFIX="ca-graph-mcp-gw-${ENV_LABEL}"  # → ca-graph-mcp-gw-prod-jdoe
 # ── Key Vault secret names ───────────────────────────────────────────────────
 KV_SECRET_CLIENT_ID="graph-mcp-client-id"
 KV_SECRET_TENANT_ID="graph-mcp-tenant-id"
+KV_SECRET_ALLOW_DOMAINS="graph-mcp-allow-domains"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -166,6 +167,8 @@ cmd_plan() {
     "az keyvault secret show --vault-name '$KV' --name '$KV_SECRET_CLIENT_ID'"
   check_resource "Secret: ${KV_SECRET_TENANT_ID}" \
     "az keyvault secret show --vault-name '$KV' --name '$KV_SECRET_TENANT_ID'"
+  check_resource "Secret: ${KV_SECRET_ALLOW_DOMAINS}" \
+    "az keyvault secret show --vault-name '$KV' --name '$KV_SECRET_ALLOW_DOMAINS'"
   echo ""
 
   echo "── Container Image ────────────────────────────────────────"
@@ -580,7 +583,7 @@ cmd_add() {
   done
 
   # Verify KV secrets
-  for s in "$KV_SECRET_CLIENT_ID" "$KV_SECRET_TENANT_ID"; do
+  for s in "$KV_SECRET_CLIENT_ID" "$KV_SECRET_TENANT_ID" "$KV_SECRET_ALLOW_DOMAINS"; do
     if ! resource_exists "az keyvault secret show --vault-name '$KV' --name '$s'"; then
       die "Secret '${s}' missing. Run: $0 secrets"
     fi
@@ -746,6 +749,9 @@ properties:
       - name: tenant-id
         keyVaultUrl: ${kv_uri}/secrets/${KV_SECRET_TENANT_ID}
         identity: system
+      - name: allow-domains
+        keyVaultUrl: ${kv_uri}/secrets/${KV_SECRET_ALLOW_DOMAINS}
+        identity: system
   template:
     containers:
       - name: ${app_name}
@@ -758,6 +764,8 @@ properties:
             secretRef: client-id
           - name: GRAPH_MCP_TENANT_ID
             secretRef: tenant-id
+          - name: GRAPH_MCP_ALLOW_DOMAINS
+            secretRef: allow-domains
           - name: HOST
             value: "0.0.0.0"
           - name: NODE_ENV

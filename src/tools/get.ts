@@ -109,12 +109,14 @@ export const getTools: ToolSpec[] = [
           .filter(`conversationId eq '${escapeODataString(conversationId)}'`)
           .select(full ? fullFields : baseFields)
           .top(top)
-          .orderby('receivedDateTime asc')
           .get());
 
       if (!cachedResponse) graphCache.set(cacheKey, response as Record<string, unknown>, CACHE_TTL_MS);
 
-      const messages = ((response as { value?: Array<Record<string, unknown>> }).value ?? []).map((m) => pickMail(m, full));
+      // Sort client-side (oldest-first) — Exchange Online rejects $orderby combined with $filter on conversationId
+      const messages = ((response as { value?: Array<Record<string, unknown>> }).value ?? [])
+        .sort((a, b) => new Date(a.receivedDateTime as string).getTime() - new Date(b.receivedDateTime as string).getTime())
+        .map((m) => pickMail(m, full));
 
       return ok(`Thread: ${messages.length} message(s).`, {
         conversation_id: conversationId,

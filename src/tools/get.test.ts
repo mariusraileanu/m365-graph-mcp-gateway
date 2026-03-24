@@ -282,6 +282,26 @@ describe('get_email_thread — with conversation_id', () => {
     assert.ok(graphGetCalls[0]!.filter?.includes('conv-abc'));
   });
 
+  it('sorts messages oldest-first by receivedDateTime (client-side)', async () => {
+    graphGetResponse = {
+      value: [
+        { id: 'msg-3', subject: 'Latest', receivedDateTime: '2026-03-20T15:00:00Z', conversationId: 'conv-sort' },
+        { id: 'msg-1', subject: 'Oldest', receivedDateTime: '2026-03-18T10:00:00Z', conversationId: 'conv-sort' },
+        { id: 'msg-2', subject: 'Middle', receivedDateTime: '2026-03-19T12:00:00Z', conversationId: 'conv-sort' },
+      ],
+    };
+    const result = await callGetEmailThread({ conversation_id: 'conv-sort' });
+
+    assert.ok(!('isError' in result));
+    const structured = result.structuredContent as Record<string, unknown>;
+    const messages = structured.messages as Array<Record<string, unknown>>;
+    assert.equal(messages.length, 3);
+    // Verify oldest-first order
+    assert.equal(messages[0]!.id, 'msg-1');
+    assert.equal(messages[1]!.id, 'msg-2');
+    assert.equal(messages[2]!.id, 'msg-3');
+  });
+
   it('passes include_full to pickMail for each message', async () => {
     graphGetResponse = { value: [{ id: 'msg-1', subject: 'Test' }] };
     await callGetEmailThread({ conversation_id: 'conv-xyz', include_full: true });
