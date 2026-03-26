@@ -55,6 +55,7 @@ const ConfigSchema = z.object({
   storage: z
     .object({
       tokenPath: z.string().default('graph-mcp/tokens'),
+      encryptionKey: z.string().optional(),
     })
     .default({}),
   server: z

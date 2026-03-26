@@ -56,6 +56,7 @@ APP_PREFIX="ca-graph-mcp-gw-${ENV_LABEL}"  # → ca-graph-mcp-gw-prod-jdoe
 KV_SECRET_CLIENT_ID="graph-mcp-client-id"
 KV_SECRET_TENANT_ID="graph-mcp-tenant-id"
 KV_SECRET_ALLOW_DOMAINS="graph-mcp-allow-domains"
+KV_SECRET_ENCRYPTION_KEY="graph-mcp-encryption-key"
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -169,6 +170,8 @@ cmd_plan() {
     "az keyvault secret show --vault-name '$KV' --name '$KV_SECRET_TENANT_ID'"
   check_resource "Secret: ${KV_SECRET_ALLOW_DOMAINS}" \
     "az keyvault secret show --vault-name '$KV' --name '$KV_SECRET_ALLOW_DOMAINS'"
+  check_resource "Secret: ${KV_SECRET_ENCRYPTION_KEY}" \
+    "az keyvault secret show --vault-name '$KV' --name '$KV_SECRET_ENCRYPTION_KEY'"
   echo ""
 
   echo "── Container Image ────────────────────────────────────────"
@@ -560,6 +563,21 @@ cmd_secrets() {
       ok "Secret '${name}' set"
     fi
   done
+
+  # Auto-generate token cache encryption key if not already in KV
+  local enc_existing
+  enc_existing=$(az keyvault secret show --vault-name "$KV" --name "$KV_SECRET_ENCRYPTION_KEY" \
+    --query value -o tsv 2>/dev/null || echo "")
+  if [ -n "$enc_existing" ]; then
+    ok "Secret '${KV_SECRET_ENCRYPTION_KEY}' exists (not overwritten)"
+  else
+    log "Generating token cache encryption key (AES-256, 32 bytes) ..."
+    local enc_key
+    enc_key=$(openssl rand -base64 32)
+    az keyvault secret set --vault-name "$KV" --name "$KV_SECRET_ENCRYPTION_KEY" \
+      --value "$enc_key" --output none
+    ok "Secret '${KV_SECRET_ENCRYPTION_KEY}' generated and stored"
+  fi
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -583,7 +601,7 @@ cmd_add() {
   done
 
   # Verify KV secrets
-  for s in "$KV_SECRET_CLIENT_ID" "$KV_SECRET_TENANT_ID" "$KV_SECRET_ALLOW_DOMAINS"; do
+  for s in "$KV_SECRET_CLIENT_ID" "$KV_SECRET_TENANT_ID" "$KV_SECRET_ALLOW_DOMAINS" "$KV_SECRET_ENCRYPTION_KEY"; do
     if ! resource_exists "az keyvault secret show --vault-name '$KV' --name '$s'"; then
       die "Secret '${s}' missing. Run: $0 secrets"
     fi
@@ -752,6 +770,9 @@ properties:
       - name: allow-domains
         keyVaultUrl: ${kv_uri}/secrets/${KV_SECRET_ALLOW_DOMAINS}
         identity: system
+      - name: encryption-key
+        keyVaultUrl: ${kv_uri}/secrets/${KV_SECRET_ENCRYPTION_KEY}
+        identity: system
   template:
     containers:
       - name: ${app_name}
@@ -766,6 +787,8 @@ properties:
             secretRef: tenant-id
           - name: GRAPH_MCP_ALLOW_DOMAINS
             secretRef: allow-domains
+          - name: GRAPH_TOKEN_CACHE_ENCRYPTION_KEY
+            secretRef: encryption-key
           - name: HOST
             value: "0.0.0.0"
           - name: NODE_ENV

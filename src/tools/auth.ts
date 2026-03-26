@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { isLoggedIn, currentUser, login, logout, getGraph } from '../auth/index.js';
+import { isLoggedIn, currentUser, login, logout, getGraph, authStatus } from '../auth/index.js';
 import { ok } from '../utils/helpers.js';
 import type { ToolSpec, LoginMode } from '../utils/types.js';
 
@@ -7,8 +7,8 @@ export const authTools: ToolSpec[] = [
   {
     name: 'auth',
     description:
-      'Authenticate with Microsoft Graph. Actions: login (interactive browser), login_device (device code for headless), logout, whoami.',
-    schema: z.object({ action: z.enum(['login', 'login_device', 'logout', 'whoami']) }).strict(),
+      'Authenticate with Microsoft Graph. Actions: login (interactive browser), login_device (device code for headless), logout, whoami, status (diagnostics).',
+    schema: z.object({ action: z.enum(['login', 'login_device', 'logout', 'whoami', 'status']) }).strict(),
     run: async (params) => {
       const action = String(params.action);
 
@@ -21,6 +21,14 @@ export const authTools: ToolSpec[] = [
       if (action === 'logout') {
         await logout();
         return ok('Logged out.', { success: true });
+      }
+
+      if (action === 'status') {
+        const status = await authStatus();
+        const summary = status.logged_in
+          ? `Authenticated as ${status.user}. Graph ${status.graph_reachable ? 'reachable' : 'unreachable'}.`
+          : 'Not authenticated.';
+        return ok(summary, { ...status });
       }
 
       // whoami

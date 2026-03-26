@@ -83,6 +83,8 @@ export function normalizeError(err: unknown): { code: string; message: string } 
   const message = err instanceof Error ? err.message : String(err);
   if (message.startsWith('AUTH_REQUIRED')) return { code: 'AUTH_REQUIRED', message };
   if (message.startsWith('AUTH_EXPIRED')) return { code: 'AUTH_EXPIRED', message };
+  if (message.startsWith('MULTIPLE_ACCOUNTS_IN_CACHE')) return { code: 'MULTIPLE_ACCOUNTS_IN_CACHE', message };
+  if (message.startsWith('CACHE_DECRYPTION_FAILED')) return { code: 'CACHE_DECRYPTION_FAILED', message };
   if (message.includes('not in allowlist')) return { code: 'FORBIDDEN', message };
   if (message.includes('required')) return { code: 'VALIDATION_ERROR', message };
   if (message.includes('not found')) return { code: 'NOT_FOUND', message };
