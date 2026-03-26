@@ -215,15 +215,17 @@ Every `tools/call` response follows this contract:
 
 Errors use a `CODE: message` pattern:
 
-| Code               | Meaning                                    |
-| ------------------ | ------------------------------------------ |
-| `AUTH_REQUIRED`    | Not logged in — call `auth` first          |
-| `AUTH_EXPIRED`     | Token expired — re-authenticate via `auth` |
-| `VALIDATION_ERROR` | Missing or invalid parameters              |
-| `FORBIDDEN`        | Recipient domain not in allowlist          |
-| `NOT_FOUND`        | Resource not found                         |
-| `UPSTREAM_ERROR`   | Microsoft Graph API error                  |
-| `INTERNAL_ERROR`   | Unexpected server error                    |
+| Code                         | Meaning                                                        |
+| ---------------------------- | -------------------------------------------------------------- |
+| `AUTH_REQUIRED`              | Not logged in — call `auth` first                              |
+| `AUTH_EXPIRED`               | Token expired — re-authenticate via `auth`                     |
+| `MULTIPLE_ACCOUNTS_IN_CACHE` | Token cache contains >1 account — logout and re-login          |
+| `CACHE_DECRYPTION_FAILED`    | Token cache exists but cannot be decrypted (wrong key/corrupt) |
+| `VALIDATION_ERROR`           | Missing or invalid parameters                                  |
+| `FORBIDDEN`                  | Recipient domain not in allowlist                              |
+| `NOT_FOUND`                  | Resource not found                                             |
+| `UPSTREAM_ERROR`             | Microsoft Graph API error                                      |
+| `INTERNAL_ERROR`             | Unexpected server error                                        |
 
 ---
 
@@ -265,11 +267,11 @@ configurable domain allowlist before any email is sent or meeting is scheduled.
 
 ### 1. `auth`
 
-Authenticate with Microsoft Graph.
+Authenticate with Microsoft Graph. Includes a `status` action for diagnostics.
 
-| Parameter | Type | Required | Description                                                                                              |
-| --------- | ---- | -------- | -------------------------------------------------------------------------------------------------------- |
-| `action`  | enum | yes      | `"login"` (interactive browser), `"login_device"` (device code for headless/SSH), `"logout"`, `"whoami"` |
+| Parameter | Type | Required | Description                                                                                                                        |
+| --------- | ---- | -------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `action`  | enum | yes      | `"login"` (interactive browser), `"login_device"` (device code for headless/SSH), `"logout"`, `"whoami"`, `"status"` (diagnostics) |
 
 **Example** — check current user:
 
@@ -287,6 +289,41 @@ Authenticate with Microsoft Graph.
   "user_principal_name": "jane@contoso.com"
 }
 ```
+
+**Example** — auth diagnostics:
+
+```json
+{ "name": "auth", "arguments": { "action": "status" } }
+```
+
+**Response** (`status`):
+
+```json
+{
+  "logged_in": true,
+  "user": "jane@contoso.com",
+  "cache_file_exists": true,
+  "cache_encrypted": true,
+  "cache_decryptable": true,
+  "encryption_key_configured": true,
+  "account_count": 1,
+  "graph_reachable": true
+}
+```
+
+Returns structured diagnostics for troubleshooting auth issues. Fields:
+
+| Field                       | Type    | Description                                                |
+| --------------------------- | ------- | ---------------------------------------------------------- |
+| `logged_in`                 | boolean | Whether a valid account is resolved from the cache         |
+| `user`                      | string  | UPN of the logged-in user (null if not logged in)          |
+| `cache_file_exists`         | boolean | Whether the token cache file exists on disk                |
+| `cache_encrypted`           | boolean | Whether the cache file uses AES-256-GCM encryption         |
+| `cache_decryptable`         | boolean | Whether the cache can be successfully decrypted/parsed     |
+| `encryption_key_configured` | boolean | Whether `GRAPH_TOKEN_CACHE_ENCRYPTION_KEY` env var is set  |
+| `account_count`             | number  | Number of accounts in the cache (should be 0 or 1)         |
+| `graph_reachable`           | boolean | Whether a test call to Microsoft Graph `/me` succeeds      |
+| `error`                     | string  | Error message if any check failed (only present on errors) |
 
 ---
 
