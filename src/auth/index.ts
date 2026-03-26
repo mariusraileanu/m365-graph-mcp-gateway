@@ -107,8 +107,12 @@ function createCachePlugin(): ICachePlugin {
         }
       } else if (key && !isEncryptedCache(raw)) {
         // Migration: plaintext cache exists but encryption key is now set.
-        // Read as plaintext; it will be encrypted on next afterCacheAccess.
-        log.warn('Migrating plaintext token cache to encrypted format on next write');
+        // Encrypt the file eagerly — afterCacheAccess only fires when MSAL
+        // considers the cache "changed", which won't happen on read-only
+        // operations like health checks or silent token acquisition.
+        log.warn('Migrating plaintext token cache to encrypted format');
+        await atomicWriteFile(cachePath, encryptTokenCache(raw, key), 0o600);
+        log.info('Token cache migration to encrypted format complete');
         json = raw;
       } else {
         // No encryption key configured — read as plaintext
