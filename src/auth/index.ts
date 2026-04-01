@@ -43,7 +43,8 @@ import { resolveStoragePath } from '../utils/helpers.js';
 import { log } from '../utils/log.js';
 import { encryptTokenCache, decryptTokenCache, parseEncryptionKey, isEncryptedCache } from './crypto.js';
 import { atomicWriteFile, safeReadFile } from '../utils/file.js';
-import type { LoginMode } from '../utils/types.js';
+import { sendNotification } from '../mcp/server.js';
+import type { LoginMode, DeviceCodeInfo } from '../utils/types.js';
 
 // ── Single-user module state ────────────────────────────────────────────────
 // These singletons are safe because one gateway = one Microsoft identity.
@@ -195,19 +196,107 @@ export async function isLoggedIn(): Promise<boolean> {
 
 // ── Login flows ─────────────────────────────────────────────────────────────
 
-async function loginDeviceCode(): Promise<void> {
+// ── Device code flow state ──────────────────────────────────────────────────
+// These track a background device-code login that the caller can poll via
+// deviceCodeLoginStatus().
+
+let pendingDeviceCodeInfo: DeviceCodeInfo | null = null;
+let pendingDeviceCodePromise: Promise<void> | null = null;
+let pendingDeviceCodeError: string | null = null;
+
+/**
+ * Start a device-code login and return the code/URL immediately.
+ *
+ * The actual token acquisition continues in the background. Callers should
+ * use `deviceCodeLoginStatus()` to poll for completion.
+ */
+export async function startDeviceCodeLogin(): Promise<DeviceCodeInfo> {
+  // If there's already a pending flow, return the existing code info
+  if (pendingDeviceCodeInfo && pendingDeviceCodePromise) {
+    return pendingDeviceCodeInfo;
+  }
+
   const app = await getMsal();
+
+  // Promise that resolves once the deviceCodeCallback fires (fast — happens
+  // almost immediately when MSAL contacts the /devicecode endpoint).
+  let resolveCodeReady: () => void;
+  const codeReady = new Promise<void>((resolve) => {
+    resolveCodeReady = resolve;
+  });
+
+  pendingDeviceCodeError = null;
+
   const request: DeviceCodeRequest = {
     scopes: loadConfig().scopes,
     deviceCodeCallback: (res) => {
-      console.log('To sign in, open https://microsoft.com/devicelogin');
-      console.log(`Enter code: ${res.userCode}`);
+      pendingDeviceCodeInfo = {
+        userCode: res.userCode,
+        verificationUri: res.verificationUri,
+        message: res.message,
+        expiresIn: res.expiresIn,
+      };
+
+      // Emit MCP logging notification (reaches the client in stdio mode)
+      sendNotification('notice', 'auth', {
+        message: res.message,
+        verification_uri: res.verificationUri,
+        user_code: res.userCode,
+      });
+
+      // Also log to stderr as a fallback for non-MCP (CLI) usage
+      log.info('Device code login', {
+        verification_uri: res.verificationUri,
+        user_code: res.userCode,
+      });
+
+      resolveCodeReady!();
     },
   };
-  const response = await app.acquireTokenByDeviceCode(request);
-  if (!response?.account) throw new Error('LOGIN_FAILED: device code login did not return an account');
-  lastKnownAccount = response.account;
-  // cachePlugin.afterCacheAccess persists tokens automatically
+
+  // Start the token acquisition but do NOT await it — let it run in the
+  // background so we can return the code to the caller immediately.
+  pendingDeviceCodePromise = app
+    .acquireTokenByDeviceCode(request)
+    .then((response) => {
+      if (!response?.account) throw new Error('LOGIN_FAILED: device code login did not return an account');
+      lastKnownAccount = response.account;
+      // cachePlugin.afterCacheAccess persists tokens automatically
+    })
+    .catch((err) => {
+      pendingDeviceCodeError = err instanceof Error ? err.message : String(err);
+    })
+    .finally(() => {
+      pendingDeviceCodeInfo = null;
+      pendingDeviceCodePromise = null;
+    });
+
+  // Wait only for the callback to fire (fast — typically <1s)
+  await codeReady;
+  return pendingDeviceCodeInfo!;
+}
+
+/** Check the status of a pending device code login. */
+export function deviceCodeLoginStatus(): { pending: boolean; error: string | null } {
+  if (pendingDeviceCodePromise) {
+    return { pending: true, error: null };
+  }
+  return { pending: false, error: pendingDeviceCodeError };
+}
+
+/**
+ * Blocking device code login — used only by the CLI (--login-device).
+ * Waits for the full flow to complete before returning.
+ */
+async function loginDeviceCode(): Promise<void> {
+  await startDeviceCodeLogin();
+  // Now await the background promise to completion
+  if (pendingDeviceCodePromise) {
+    await pendingDeviceCodePromise;
+  }
+  if (pendingDeviceCodeError) {
+    throw new Error(pendingDeviceCodeError);
+  }
 }
 
 async function loginInteractive(): Promise<void> {
@@ -247,6 +336,9 @@ export async function logout(): Promise<void> {
   msal = null;
   graph = null;
   resolvedKey = undefined; // allow re-resolution on next access
+  pendingDeviceCodeInfo = null;
+  pendingDeviceCodePromise = null;
+  pendingDeviceCodeError = null;
 
   // Remove token cache file
   const cachePath = await getTokenCachePath();
@@ -328,6 +420,9 @@ export interface AuthStatusResult {
   encryption_key_configured: boolean;
   account_count: number;
   graph_reachable: boolean;
+  device_code_pending: boolean;
+  device_code_verification_uri?: string;
+  device_code_user_code?: string;
   error?: string;
 }
 
@@ -345,7 +440,14 @@ export async function authStatus(): Promise<AuthStatusResult> {
     encryption_key_configured: false,
     account_count: 0,
     graph_reachable: false,
+    device_code_pending: pendingDeviceCodePromise !== null,
   };
+
+  // Include device code info if a flow is in progress
+  if (pendingDeviceCodeInfo) {
+    result.device_code_verification_uri = pendingDeviceCodeInfo.verificationUri;
+    result.device_code_user_code = pendingDeviceCodeInfo.userCode;
+  }
 
   // Check encryption key
   try {

@@ -17,6 +17,7 @@ const SERVER_INFO = { name: 'm365-graph-mcp-gateway', version: '1.0.0' };
 
 const SERVER_CAPABILITIES = {
   tools: { listChanged: false },
+  logging: {},
 };
 
 const SECURITY_HEADERS: Record<string, string> = {
@@ -24,6 +25,51 @@ const SECURITY_HEADERS: Record<string, string> = {
   'X-Frame-Options': 'DENY',
   'Cache-Control': 'no-store',
 };
+
+// ── MCP Logging (server → client notifications) ───────────────────────────
+
+/** RFC 5424 severity levels supported by the MCP logging spec. */
+type McpLogLevel = 'debug' | 'info' | 'notice' | 'warning' | 'error' | 'critical' | 'alert' | 'emergency';
+
+const LOG_LEVEL_SEVERITY: Record<McpLogLevel, number> = {
+  debug: 0,
+  info: 1,
+  notice: 2,
+  warning: 3,
+  error: 4,
+  critical: 5,
+  alert: 6,
+  emergency: 7,
+};
+
+const VALID_LOG_LEVELS = new Set<string>(Object.keys(LOG_LEVEL_SEVERITY));
+
+/** Current minimum log level requested by the client via logging/setLevel. */
+let clientMinLogLevel: McpLogLevel = 'debug';
+
+/** Whether we are running in stdio transport mode (can push notifications). */
+let stdioMode = false;
+
+/**
+ * Send an MCP logging notification (notifications/message) to the client.
+ *
+ * Only works in stdio transport mode — in HTTP mode the notification is
+ * silently dropped because there is no persistent channel to push to.
+ * Also filtered by the minimum log level set by the client.
+ */
+export function sendNotification(level: McpLogLevel, logger: string, data: unknown): void {
+  if (!stdioMode) return;
+
+  // Filter by client-requested minimum log level
+  if (LOG_LEVEL_SEVERITY[level] < LOG_LEVEL_SEVERITY[clientMinLogLevel]) return;
+
+  const notification = {
+    jsonrpc: '2.0' as const,
+    method: 'notifications/message',
+    params: { level, logger, data },
+  };
+  process.stdout.write(JSON.stringify(notification) + '\n');
+}
 
 // ── Rate limiter (sliding window) ──────────────────────────────────────────
 
@@ -80,6 +126,17 @@ rateLimitCleanupInterval.unref();
 /** Reset all rate-limit buckets. Exported for testing only. */
 export function _resetRateLimits(): void {
   rateBuckets.clear();
+}
+
+/** Reset logging state. Exported for testing only. */
+export function _resetLoggingState(): void {
+  clientMinLogLevel = 'debug';
+  stdioMode = false;
+}
+
+/** Enable stdio mode. Exported for testing only. */
+export function _setStdioMode(enabled: boolean): void {
+  stdioMode = enabled;
 }
 
 // ── In-flight request tracking (for notifications/cancelled) ───────────────
@@ -205,6 +262,22 @@ async function handleRequest(request: MCPRequest, signal?: AbortSignal): Promise
       return { jsonrpc: '2.0', id, result: {} };
     }
 
+    if (method === 'logging/setLevel') {
+      const level = params?.level;
+      if (typeof level !== 'string' || !VALID_LOG_LEVELS.has(level)) {
+        return {
+          jsonrpc: '2.0',
+          id,
+          error: {
+            code: -32602,
+            message: `Invalid log level: ${String(level)}. Valid levels: ${[...VALID_LOG_LEVELS].join(', ')}`,
+          },
+        };
+      }
+      clientMinLogLevel = level as McpLogLevel;
+      return { jsonrpc: '2.0', id, result: {} };
+    }
+
     if (method === 'tools/list') {
       const listed = tools.map((tool) => ({
         name: tool.name,
@@ -301,6 +374,7 @@ async function processMessage(raw: unknown): Promise<MCPResponse | null> {
 }
 
 export function startMcpStdioServer(): void {
+  stdioMode = true;
   let buffer = '';
   let bufferBytes = 0;
   process.stdin.setEncoding('utf8');

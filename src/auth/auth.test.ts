@@ -88,6 +88,13 @@ mock.module('@azure/msal-node', {
 
 mock.module('open', { defaultExport: async () => {} });
 
+// Mock MCP server module — sendNotification is a no-op in tests
+mock.module('../mcp/server.js', {
+  namedExports: {
+    sendNotification: () => {},
+  },
+});
+
 // Dynamic import AFTER mocks
 const { getAccessToken, isLoggedIn, currentUser } = await import('./index.js');
 

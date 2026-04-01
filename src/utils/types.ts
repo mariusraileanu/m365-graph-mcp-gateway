@@ -51,6 +51,14 @@ export interface MCPResponse {
 
 export type LoginMode = 'interactive' | 'device';
 
+/** Info returned by the device code callback, surfaced to MCP clients. */
+export interface DeviceCodeInfo {
+  userCode: string;
+  verificationUri: string;
+  message: string;
+  expiresIn: number;
+}
+
 export type GraphFileAttachment = {
   '@odata.type': '#microsoft.graph.fileAttachment';
   name: string;

@@ -9,6 +9,14 @@ interface LogEntry {
   [key: string]: unknown;
 }
 
+/**
+ * All log output goes to stderr.
+ *
+ * In stdio MCP transport mode, stdout is the JSON-RPC channel — writing
+ * log lines there would corrupt the protocol stream.  Using stderr for
+ * every level keeps the transport clean regardless of mode while still
+ * making logs visible in the terminal / container runtime.
+ */
 function emit(level: LogLevel, msg: string, data?: Record<string, unknown>): void {
   const entry: LogEntry = {
     level,
@@ -17,11 +25,7 @@ function emit(level: LogLevel, msg: string, data?: Record<string, unknown>): voi
     ...data,
   };
   const line = JSON.stringify(entry);
-  if (level === 'error') {
-    process.stderr.write(line + '\n');
-  } else {
-    process.stdout.write(line + '\n');
-  }
+  process.stderr.write(line + '\n');
 }
 
 export const log = {
