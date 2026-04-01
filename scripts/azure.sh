@@ -28,6 +28,7 @@ set -euo pipefail
 #   AZURE_LAW_NAME               AZURE_LOCATION
 #   AZURE_STORAGE_ACCOUNT        AZURE_NFS_STORAGE_NAME
 #   AZURE_VNET_NAME              AZURE_SUBNET_NAME
+#   AZURE_IMAGE_NAME             AZURE_APP_PREFIX
 # ──────────────────────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -48,9 +49,9 @@ NFS_STORAGE_NAME="${AZURE_NFS_STORAGE_NAME:-graph-mcp-nfs-${ENV_LABEL}}"
 VNET_NAME="${AZURE_VNET_NAME:-vnet-graph-mcp-${ENV_LABEL}}"
 SUBNET_NAME="${AZURE_SUBNET_NAME:-snet-containerapps-${ENV_LABEL}}"
 
-# ── Naming conventions (derived from ENV_LABEL — not configurable) ───────
-IMAGE_NAME="graph-mcp-gateway"
-APP_PREFIX="ca-graph-mcp-gw-${ENV_LABEL}"  # → ca-graph-mcp-gw-prod-jdoe
+# ── Naming conventions (overridable via env vars) ────────────────────────
+IMAGE_NAME="${AZURE_IMAGE_NAME:-graph-mcp-gateway}"
+APP_PREFIX="${AZURE_APP_PREFIX:-ca-graph-mcp-gw-${ENV_LABEL}}"  # → ca-graph-mcp-gw-prod-jdoe
 
 # ── Key Vault secret names ───────────────────────────────────────────────────
 KV_SECRET_CLIENT_ID="graph-mcp-client-id"
@@ -1111,6 +1112,8 @@ Environment overrides:
   AZURE_NFS_STORAGE_NAME       (${NFS_STORAGE_NAME})
   AZURE_VNET_NAME              (${VNET_NAME})
   AZURE_SUBNET_NAME            (${SUBNET_NAME})
+  AZURE_IMAGE_NAME             (${IMAGE_NAME})
+  AZURE_APP_PREFIX             (${APP_PREFIX})
 
 Derived (from ENV_LABEL):
   APP_PREFIX                   (${APP_PREFIX})
