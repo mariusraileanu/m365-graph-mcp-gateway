@@ -4,9 +4,16 @@ import { loadConfig } from '../config/index.js';
 import type { Json, ToolSuccess, ToolFailure, ToolResult } from './types.js';
 
 export function resolveStoragePath(configPath: string): string {
-  const userSlug = process.env.USER_SLUG;
+  const userSlugRaw = process.env.USER_SLUG;
+  const userSlug = userSlugRaw?.trim().toLowerCase();
   // Azure: NFS share mounted at /app/data, scoped by USER_SLUG
-  if (userSlug && fs.existsSync('/app/data')) {
+  if (userSlugRaw) {
+    if (userSlugRaw !== userSlug || !/^[a-z][a-z0-9-]{1,30}$/.test(userSlug)) {
+      throw new Error(`INVALID_USER_SLUG: '${userSlugRaw}'`);
+    }
+    if (!fs.existsSync('/app/data')) {
+      throw new Error('STORAGE_PATH_ERROR: USER_SLUG is set but /app/data is not mounted');
+    }
     return path.resolve('/app/data', userSlug, configPath);
   }
   // Docker / bare container: /app exists but no USER_SLUG

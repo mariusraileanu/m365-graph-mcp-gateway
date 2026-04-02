@@ -61,6 +61,7 @@ let lastKnownAccount: AccountInfo | null = null;
 
 /** Whether we have already logged the "no encryption key" warning. */
 let encryptionWarningLogged = false;
+let lastIdentityMismatchError: string | null = null;
 
 // ── Token cache path ────────────────────────────────────────────────────────
 
@@ -68,6 +69,90 @@ async function getTokenCachePath(): Promise<string> {
   const dir = resolveStoragePath(loadConfig().storage.tokenPath);
   await fs.promises.mkdir(dir, { recursive: true });
   return path.join(dir, 'token-cache.json');
+}
+
+function normalizeObjectId(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function isObjectId(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+function expectedObjectId(): string | null {
+  const raw = loadConfig().server.expectedAadObjectId;
+  if (!raw) return null;
+  const normalized = normalizeObjectId(raw);
+  return isObjectId(normalized) ? normalized : null;
+}
+
+function extractAccountObjectId(account: AccountInfo): string | null {
+  const claims = account.idTokenClaims as Record<string, unknown> | undefined;
+  const claimOid = typeof claims?.oid === 'string' ? claims.oid : '';
+  if (claimOid && isObjectId(claimOid)) return normalizeObjectId(claimOid);
+
+  const localAccountId = account.localAccountId;
+  if (localAccountId && isObjectId(localAccountId)) return normalizeObjectId(localAccountId);
+
+  return null;
+}
+
+async function quarantineTokenCache(reason: string): Promise<string | null> {
+  const cachePath = await getTokenCachePath();
+  const suffix = new Date().toISOString().replace(/[:.]/g, '-');
+  const quarantinePath = `${cachePath}.quarantine-${suffix}`;
+  try {
+    await fs.promises.rename(cachePath, quarantinePath);
+    log.warn('Token cache quarantined', { reason, cache_path: cachePath, quarantine_path: quarantinePath });
+    return quarantinePath;
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') {
+      log.warn('Token cache quarantine skipped (cache file absent)', { reason, cache_path: cachePath });
+      return null;
+    }
+    log.error('Token cache quarantine failed', {
+      reason,
+      cache_path: cachePath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+}
+
+async function enforceExpectedIdentity(account: AccountInfo): Promise<boolean> {
+  const expected = expectedObjectId();
+  if (!expected) {
+    lastIdentityMismatchError = null;
+    return true;
+  }
+
+  const actual = extractAccountObjectId(account);
+  const user = account.username || 'unknown';
+
+  if (actual && actual === expected) {
+    lastIdentityMismatchError = null;
+    return true;
+  }
+
+  const reason = actual
+    ? `TOKEN_IDENTITY_MISMATCH expected=${expected} actual=${actual} user=${user}`
+    : `TOKEN_IDENTITY_UNKNOWN expected=${expected} user=${user}`;
+  await quarantineTokenCache(reason);
+
+  lastIdentityMismatchError = reason;
+  lastKnownAccount = null;
+  msal = null;
+  graph = null;
+
+  log.error('Token identity validation failed; cache quarantined and login reset', {
+    expected_object_id: expected,
+    actual_object_id: actual,
+    user,
+    reason,
+  });
+
+  return false;
 }
 
 // ── Encryption key (resolved once, cached) ──────────────────────────────────
@@ -174,7 +259,16 @@ async function resolveAccount(): Promise<AccountInfo | null> {
   }
 
   if (accounts.length === 1) {
-    lastKnownAccount = accounts[0] ?? null;
+    const account = accounts[0] ?? null;
+    if (!account) {
+      lastKnownAccount = null;
+      return null;
+    }
+    const identityOk = await enforceExpectedIdentity(account);
+    if (!identityOk) {
+      return null;
+    }
+    lastKnownAccount = account;
     return lastKnownAccount;
   }
 
@@ -362,6 +456,9 @@ export async function getAccessToken(): Promise<string> {
   const account = await resolveAccount();
 
   if (!account) {
+    if (lastIdentityMismatchError) {
+      throw new Error(`AUTH_REQUIRED: ${lastIdentityMismatchError}. Re-authenticate with login_device.`);
+    }
     throw new Error('AUTH_REQUIRED: not logged in, run --login first');
   }
 
@@ -409,6 +506,141 @@ export function getGraph(): Client {
   return graph;
 }
 
+// ── Startup identity verification ───────────────────────────────────────────
+
+export interface IdentityVerificationResult {
+  checked: boolean;
+  mismatch: boolean;
+  cached_user: string | null;
+  cached_object_id: string | null;
+  expected_object_id: string | null;
+  reason?: string;
+  quarantined_path?: string;
+}
+
+/**
+ * Verify that the cached MSAL identity matches the expected Entra object ID for this
+ * container's USER_SLUG. Called once at startup.
+ *
+ * - If EXPECTED_AAD_OBJECT_ID is not set, the check is skipped (backward compat).
+ * - If no account is cached (not logged in), the check is skipped.
+ * - If the object ID matches, logs success and returns.
+ * - If the object ID does NOT match, quarantines the cache file, clears in-memory
+ *   state, and returns a mismatch result so the caller can log and continue.
+ *
+ * This function is idempotent: after quarantine the cache is empty, so
+ * subsequent calls find 0 accounts and skip.
+ */
+export async function verifyIdentityBinding(): Promise<IdentityVerificationResult> {
+  const expectedOid = expectedObjectId();
+  const slug = process.env.USER_SLUG ?? 'unknown';
+
+  if (!expectedOid) {
+    log.info('Identity binding check skipped — EXPECTED_AAD_OBJECT_ID not set', { slug });
+    return {
+      checked: false,
+      mismatch: false,
+      cached_user: null,
+      cached_object_id: null,
+      expected_object_id: null,
+    };
+  }
+
+  // Resolve cached account (cheap — reads MSAL in-memory cache / disk once)
+  let account: AccountInfo | null;
+  try {
+    account = await resolveAccount();
+  } catch {
+    // e.g. MULTIPLE_ACCOUNTS_IN_CACHE — quarantine regardless
+    account = null;
+  }
+
+  if (!account) {
+    if (lastIdentityMismatchError) {
+      log.warn('Identity binding mismatch detected at startup', {
+        slug,
+        expected_object_id: expectedOid,
+        reason: lastIdentityMismatchError,
+      });
+      return {
+        checked: true,
+        mismatch: true,
+        cached_user: null,
+        cached_object_id: null,
+        expected_object_id: expectedOid,
+        reason: lastIdentityMismatchError,
+      };
+    }
+    log.info('Identity binding check skipped — no cached account', {
+      slug,
+      expected_object_id: expectedOid,
+    });
+    return {
+      checked: true,
+      mismatch: false,
+      cached_user: null,
+      cached_object_id: null,
+      expected_object_id: expectedOid,
+    };
+  }
+
+  const cachedUser = account.username;
+  const cachedOid = extractAccountObjectId(account);
+
+  if (cachedOid && cachedOid === expectedOid) {
+    log.info('Identity verified', { slug, user: cachedUser, object_id: cachedOid });
+    return {
+      checked: true,
+      mismatch: false,
+      cached_user: cachedUser,
+      cached_object_id: cachedOid,
+      expected_object_id: expectedOid,
+    };
+  }
+
+  // ── MISMATCH — quarantine the cache ─────────────────────────────────────
+  const reason = cachedOid
+    ? `TOKEN_IDENTITY_MISMATCH expected=${expectedOid} actual=${cachedOid} user=${cachedUser}`
+    : `TOKEN_IDENTITY_UNKNOWN expected=${expectedOid} user=${cachedUser}`;
+  log.warn('TOKEN_IDENTITY_MISMATCH', {
+    slug,
+    expected_object_id: expectedOid,
+    actual_object_id: cachedOid,
+    user: cachedUser,
+  });
+
+  const cachePath = await getTokenCachePath();
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const quarantinedPath = `${cachePath}.${timestamp}.quarantined`;
+
+  try {
+    await fs.promises.rename(cachePath, quarantinedPath);
+    log.info('Token cache quarantined', { from: cachePath, to: quarantinedPath });
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') {
+      log.error('Failed to quarantine token cache', { error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+
+  // Clear all in-memory auth state — force fresh login
+  lastIdentityMismatchError = reason;
+  lastKnownAccount = null;
+  msal = null;
+  graph = null;
+  resolvedKey = undefined;
+
+  return {
+    checked: true,
+    mismatch: true,
+    cached_user: cachedUser,
+    cached_object_id: cachedOid,
+    expected_object_id: expectedOid,
+    reason,
+    quarantined_path: quarantinedPath,
+  };
+}
+
 // ── Auth diagnostics ────────────────────────────────────────────────────────
 
 export interface AuthStatusResult {
@@ -421,6 +653,9 @@ export interface AuthStatusResult {
   account_count: number;
   graph_reachable: boolean;
   device_code_pending: boolean;
+  expected_object_id: string | null;
+  actual_object_id: string | null;
+  identity_match: boolean | null;
   device_code_verification_uri?: string;
   device_code_user_code?: string;
   error?: string;
@@ -441,6 +676,9 @@ export async function authStatus(): Promise<AuthStatusResult> {
     account_count: 0,
     graph_reachable: false,
     device_code_pending: pendingDeviceCodePromise !== null,
+    expected_object_id: expectedObjectId(),
+    actual_object_id: null,
+    identity_match: null,
   };
 
   // Include device code info if a flow is in progress
@@ -488,8 +726,28 @@ export async function authStatus(): Promise<AuthStatusResult> {
     result.account_count = accounts.length;
 
     if (accounts.length === 1) {
-      result.logged_in = true;
-      result.user = accounts[0]?.username ?? null;
+      const account = accounts[0];
+      result.user = account?.username ?? null;
+      result.actual_object_id = account ? extractAccountObjectId(account) : null;
+      if (result.expected_object_id) {
+        if (result.actual_object_id) {
+          result.identity_match = result.actual_object_id === result.expected_object_id;
+          if (!result.identity_match) {
+            result.error = `TOKEN_IDENTITY_MISMATCH: expected=${result.expected_object_id} actual=${result.actual_object_id}`;
+          }
+        } else {
+          result.identity_match = false;
+          result.error = `TOKEN_IDENTITY_UNKNOWN: expected=${result.expected_object_id}`;
+        }
+      } else {
+        result.identity_match = null;
+      }
+
+      if (result.identity_match === false) {
+        result.logged_in = false;
+      } else {
+        result.logged_in = true;
+      }
     } else if (accounts.length > 1) {
       result.error = 'MULTIPLE_ACCOUNTS_IN_CACHE: this gateway is designed for one user only. Run --logout and authenticate again.';
     }

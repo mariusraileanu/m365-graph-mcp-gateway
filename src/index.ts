@@ -1,5 +1,5 @@
 import { loadConfig } from './config/index.js';
-import { login, logout, currentUser, isLoggedIn } from './auth/index.js';
+import { login, logout, currentUser, isLoggedIn, verifyIdentityBinding } from './auth/index.js';
 import { auditLogger } from './utils/audit.js';
 import { log } from './utils/log.js';
 import { runSmoke } from './utils/smoke.js';
@@ -16,6 +16,17 @@ async function main(): Promise<void> {
 
   loadConfig(); // validate config early
   await auditLogger.init();
+
+  // Identity-pinning: verify cached MSAL identity matches expected UPN.
+  // Runs before any auth operations — quarantines stale/wrong caches early.
+  const idCheck = await verifyIdentityBinding();
+  if (idCheck.mismatch) {
+    log.warn('Cached identity quarantined — fresh login required', {
+      cached: idCheck.cached_upn,
+      expected: idCheck.expected_upn,
+      quarantined: idCheck.quarantined_path,
+    });
+  }
 
   if (args.includes('--login') || args.includes('--login-interactive')) {
     await login('interactive');

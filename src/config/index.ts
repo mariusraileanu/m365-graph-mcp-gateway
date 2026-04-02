@@ -61,6 +61,7 @@ const ConfigSchema = z.object({
   server: z
     .object({
       apiKey: z.string().optional(),
+      expectedAadObjectId: z.string().optional(),
     })
     .default({}),
 });
@@ -74,6 +75,14 @@ export type SearchConfig = Config['search'];
 export type CalendarConfig = Config['calendar'];
 export type StorageConfig = Config['storage'];
 export type ServerConfig = Config['server'];
+
+function normalizeAadObjectId(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function isAadObjectId(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
 
 function expandEnvVars(value: string): string {
   return value.replace(/\$\{([^}]+)\}/g, (_, key) => {
@@ -128,6 +137,17 @@ export function loadConfig(): Config {
     } catch (e) {
       throw new Error(`Invalid GRAPH_MCP_ALLOW_DOMAINS — expected JSON array of strings: ${e}`);
     }
+  }
+
+  const envExpectedAadObjectId = process.env.EXPECTED_AAD_OBJECT_ID;
+  if (envExpectedAadObjectId) {
+    const normalized = normalizeAadObjectId(envExpectedAadObjectId);
+    if (!isAadObjectId(normalized)) {
+      throw new Error('Invalid EXPECTED_AAD_OBJECT_ID — expected Entra object ID UUID');
+    }
+    const root = expanded as Record<string, Record<string, unknown>>;
+    root.server ??= {};
+    root.server.expectedAadObjectId = normalized;
   }
 
   const result = ConfigSchema.safeParse(expanded);

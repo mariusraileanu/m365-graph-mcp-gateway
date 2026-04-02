@@ -53,14 +53,15 @@ describe('resolveStoragePath', () => {
     assert.equal(result, path.resolve(process.cwd(), 'data', 'graph-mcp/tokens'));
   });
 
-  it('falls through to /app when USER_SLUG set but /app/data missing', () => {
+  it('throws STORAGE_PATH_ERROR when USER_SLUG set but /app/data missing', () => {
     process.env.USER_SLUG = 'jdoe';
     existsSyncMock.mock.mockImplementation((p: fs.PathLike) => {
       const s = String(p);
       return s === '/app'; // /app/data doesn't exist, but /app does
     });
-    const result = resolveStoragePath('graph-mcp/tokens');
-    assert.equal(result, '/app/graph-mcp/tokens');
+    assert.throws(() => resolveStoragePath('graph-mcp/tokens'), {
+      message: 'STORAGE_PATH_ERROR: USER_SLUG is set but /app/data is not mounted',
+    });
   });
 
   it('handles nested audit path correctly', () => {

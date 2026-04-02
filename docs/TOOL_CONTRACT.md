@@ -46,6 +46,32 @@ The `/mcp` endpoint supports optional API key authentication via the
 - Uses **constant-time comparison** (`crypto.timingSafeEqual`) to prevent timing attacks.
 - Returns HTTP **401** with `{"error": "Unauthorized: invalid or missing API key"}` on failure.
 
+### Identity Binding
+
+The gateway supports **identity pinning** to ensure the cached Microsoft identity
+matches the expected user for a given deployment. This prevents cross-user token
+reuse when multiple containers share infrastructure.
+
+**UPN binding** (`GRAPH_MCP_EXPECTED_UPN`):
+
+- On startup, compares the cached MSAL account's UPN against the expected value
+  (case-insensitive)
+- If mismatch: quarantines the token cache file (renamed to
+  `token-cache.json.<timestamp>.quarantined`), clears in-memory auth state, and
+  requires fresh device-code login
+- If not configured or no cached account: skipped (backward compatible)
+- The `auth` tool's `status` action reports `expected_upn` and
+  `identity_binding_verified` fields for diagnostics
+
+**Entra object ID binding** (`EXPECTED_AAD_OBJECT_ID`):
+
+- Validated on every `resolveAccount()` call (not just startup)
+- Compares the AAD object ID from the cached account's `idTokenClaims.oid` or
+  `localAccountId` against the expected UUID
+- If mismatch: quarantines the cache and resets auth state
+- The `auth` tool's `status` action reports `expected_object_id`,
+  `actual_object_id`, and `identity_match` fields
+
 ```bash
 # With API key configured
 curl -s http://localhost:3000/mcp \
@@ -221,6 +247,7 @@ Errors use a `CODE: message` pattern:
 | `AUTH_EXPIRED`               | Token expired — re-authenticate via `auth`                     |
 | `MULTIPLE_ACCOUNTS_IN_CACHE` | Token cache contains >1 account — logout and re-login          |
 | `CACHE_DECRYPTION_FAILED`    | Token cache exists but cannot be decrypted (wrong key/corrupt) |
+| `TOKEN_IDENTITY_MISMATCH`    | Cached identity does not match expected UPN or Entra object ID |
 | `VALIDATION_ERROR`           | Missing or invalid parameters                                  |
 | `FORBIDDEN`                  | Recipient domain not in allowlist                              |
 | `NOT_FOUND`                  | Resource not found                                             |
@@ -338,26 +365,33 @@ display MCP logging notifications will surface it in real time.
   "encryption_key_configured": true,
   "account_count": 1,
   "graph_reachable": true,
-  "device_code_pending": false
+  "device_code_pending": false,
+  "expected_upn": "jane@contoso.com",
+  "identity_binding_verified": true
 }
 ```
 
 Returns structured diagnostics for troubleshooting auth issues. Fields:
 
-| Field                          | Type    | Description                                                          |
-| ------------------------------ | ------- | -------------------------------------------------------------------- |
-| `logged_in`                    | boolean | Whether a valid account is resolved from the cache                   |
-| `user`                         | string  | UPN of the logged-in user (null if not logged in)                    |
-| `cache_file_exists`            | boolean | Whether the token cache file exists on disk                          |
-| `cache_encrypted`              | boolean | Whether the cache file uses AES-256-GCM encryption                   |
-| `cache_decryptable`            | boolean | Whether the cache can be successfully decrypted/parsed               |
-| `encryption_key_configured`    | boolean | Whether `GRAPH_TOKEN_CACHE_ENCRYPTION_KEY` env var is set            |
-| `account_count`                | number  | Number of accounts in the cache (should be 0 or 1)                   |
-| `graph_reachable`              | boolean | Whether a test call to Microsoft Graph `/me` succeeds                |
-| `device_code_pending`          | boolean | Whether a device code login flow is currently in progress            |
-| `device_code_verification_uri` | string  | Verification URI (only present when `device_code_pending` is true)   |
-| `device_code_user_code`        | string  | User code to enter (only present when `device_code_pending` is true) |
-| `error`                        | string  | Error message if any check failed (only present on errors)           |
+| Field                          | Type    | Description                                                                                   |
+| ------------------------------ | ------- | --------------------------------------------------------------------------------------------- |
+| `logged_in`                    | boolean | Whether a valid account is resolved from the cache                                            |
+| `user`                         | string  | UPN of the logged-in user (null if not logged in)                                             |
+| `cache_file_exists`            | boolean | Whether the token cache file exists on disk                                                   |
+| `cache_encrypted`              | boolean | Whether the cache file uses AES-256-GCM encryption                                            |
+| `cache_decryptable`            | boolean | Whether the cache can be successfully decrypted/parsed                                        |
+| `encryption_key_configured`    | boolean | Whether `GRAPH_TOKEN_CACHE_ENCRYPTION_KEY` env var is set                                     |
+| `account_count`                | number  | Number of accounts in the cache (should be 0 or 1)                                            |
+| `graph_reachable`              | boolean | Whether a test call to Microsoft Graph `/me` succeeds                                         |
+| `device_code_pending`          | boolean | Whether a device code login flow is currently in progress                                     |
+| `expected_upn`                 | string  | Expected UPN from `GRAPH_MCP_EXPECTED_UPN` (null if not configured)                           |
+| `identity_binding_verified`    | boolean | Whether the cached UPN matches the expected UPN (null if not configured or no cached account) |
+| `expected_object_id`           | string  | Expected Entra object ID from `EXPECTED_AAD_OBJECT_ID` (null if not configured)               |
+| `actual_object_id`             | string  | Entra object ID from the cached account (null if no cached account)                           |
+| `identity_match`               | boolean | Whether the Entra object ID matches (null if not configured)                                  |
+| `device_code_verification_uri` | string  | Verification URI (only present when `device_code_pending` is true)                            |
+| `device_code_user_code`        | string  | User code to enter (only present when `device_code_pending` is true)                          |
+| `error`                        | string  | Error message if any check failed (only present on errors)                                    |
 
 ---
 
