@@ -1,13 +1,15 @@
 import { describe, it, mock, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-// ── Configurable mock state ─────────────────────────────────────────────────
-
-let mockAccounts: Array<{ homeAccountId: string; username: string }> = [];
+let mockAccounts: Array<{
+  homeAccountId: string;
+  username: string;
+  localAccountId?: string;
+  idTokenClaims?: Record<string, unknown>;
+}> = [];
 let renameCalls: Array<{ oldPath: string; newPath: string }> = [];
 let renameError: Error | null = null;
-
-// ── Module-level mocks (before dynamic import) ─────────────────────────────
+let expectedObjectIdEnv: string | undefined;
 
 mock.module('../config/index.js', {
   namedExports: {
@@ -23,7 +25,12 @@ mock.module('../config/index.js', {
       search: { defaultTop: 10, maxTop: 50 },
       calendar: { defaultTimezone: 'UTC' },
       storage: { tokenPath: 'tokens', encryptionKey: '' },
-      server: { apiKey: undefined },
+      server: {
+        apiKey: undefined,
+        get expectedAadObjectId() {
+          return expectedObjectIdEnv;
+        },
+      },
     }),
   },
 });
@@ -56,8 +63,6 @@ mock.module('../utils/file.js', {
   },
 });
 
-// Mock fs — we need to intercept fs.promises.rename for quarantine testing.
-// Also mock mkdir so getTokenCachePath() doesn't hit the real filesystem.
 mock.module('fs', {
   defaultExport: {
     existsSync: () => false,
@@ -102,157 +107,130 @@ mock.module('../mcp/server.js', {
   },
 });
 
-// Dynamic import AFTER mocks
 const { verifyIdentityBinding } = await import('./index.js');
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-const savedEnv: Record<string, string | undefined> = {};
-
-function setEnv(key: string, value: string | undefined): void {
-  savedEnv[key] = process.env[key];
-  if (value === undefined) {
-    delete process.env[key];
-  } else {
-    process.env[key] = value;
-  }
-}
-
-function restoreEnv(): void {
-  for (const [key, value] of Object.entries(savedEnv)) {
-    if (value === undefined) {
-      delete process.env[key];
-    } else {
-      process.env[key] = value;
-    }
-  }
-  // Clear saved state
-  for (const key of Object.keys(savedEnv)) {
-    delete savedEnv[key];
-  }
-}
-
-// ── Tests ───────────────────────────────────────────────────────────────────
-
-describe('verifyIdentityBinding', () => {
+describe('verifyIdentityBinding (object-id mode)', () => {
   beforeEach(() => {
     renameCalls = [];
     renameError = null;
     mockAccounts = [];
+    expectedObjectIdEnv = undefined;
   });
 
   afterEach(() => {
-    restoreEnv();
+    expectedObjectIdEnv = undefined;
   });
 
-  it('skips check when GRAPH_MCP_EXPECTED_UPN is not set', async () => {
-    setEnv('GRAPH_MCP_EXPECTED_UPN', undefined);
-    mockAccounts = [{ homeAccountId: 'h1', username: 'alice@example.com' }];
+  it('skips check when EXPECTED_AAD_OBJECT_ID is not set', async () => {
+    mockAccounts = [
+      {
+        homeAccountId: 'h1',
+        username: 'alice@example.com',
+        localAccountId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      },
+    ];
 
     const result = await verifyIdentityBinding();
 
     assert.equal(result.checked, false);
     assert.equal(result.mismatch, false);
-    assert.equal(result.cached_upn, null);
-    assert.equal(result.expected_upn, null);
-    assert.equal(renameCalls.length, 0, 'should not quarantine');
+    assert.equal(result.expected_object_id, null);
+    assert.equal(renameCalls.length, 0);
   });
 
-  it('skips check when GRAPH_MCP_EXPECTED_UPN is empty string', async () => {
-    setEnv('GRAPH_MCP_EXPECTED_UPN', '  ');
-    mockAccounts = [{ homeAccountId: 'h1', username: 'alice@example.com' }];
-
-    const result = await verifyIdentityBinding();
-
-    assert.equal(result.checked, false);
-    assert.equal(result.mismatch, false);
-  });
-
-  it('skips when expected UPN is set but no cached account', async () => {
-    setEnv('GRAPH_MCP_EXPECTED_UPN', 'alice@example.com');
-    mockAccounts = [];
+  it('passes when claim oid matches expected object id', async () => {
+    expectedObjectIdEnv = '11111111-1111-4111-8111-111111111111';
+    mockAccounts = [
+      {
+        homeAccountId: 'h1',
+        username: 'alice@example.com',
+        localAccountId: '22222222-2222-4222-8222-222222222222',
+        idTokenClaims: { oid: '11111111-1111-4111-8111-111111111111' },
+      },
+    ];
 
     const result = await verifyIdentityBinding();
 
     assert.equal(result.checked, true);
     assert.equal(result.mismatch, false);
-    assert.equal(result.cached_upn, null);
-    assert.equal(result.expected_upn, 'alice@example.com');
-    assert.equal(renameCalls.length, 0, 'should not quarantine');
+    assert.equal(result.expected_object_id, '11111111-1111-4111-8111-111111111111');
+    assert.equal(result.cached_object_id, '11111111-1111-4111-8111-111111111111');
+    assert.equal(renameCalls.length, 0);
   });
 
-  it('returns success when UPN matches (exact case)', async () => {
-    setEnv('GRAPH_MCP_EXPECTED_UPN', 'alice@example.com');
-    mockAccounts = [{ homeAccountId: 'h1', username: 'alice@example.com' }];
+  it('falls back to localAccountId when oid claim is missing', async () => {
+    expectedObjectIdEnv = '33333333-3333-4333-8333-333333333333';
+    mockAccounts = [
+      {
+        homeAccountId: 'h1',
+        username: 'alice@example.com',
+        localAccountId: '33333333-3333-4333-8333-333333333333',
+      },
+    ];
 
     const result = await verifyIdentityBinding();
 
     assert.equal(result.checked, true);
     assert.equal(result.mismatch, false);
-    assert.equal(result.cached_upn, 'alice@example.com');
-    assert.equal(result.expected_upn, 'alice@example.com');
-    assert.equal(renameCalls.length, 0, 'should not quarantine on match');
+    assert.equal(result.cached_object_id, '33333333-3333-4333-8333-333333333333');
+    assert.equal(renameCalls.length, 0);
   });
 
-  it('returns success when UPN matches (case-insensitive)', async () => {
-    setEnv('GRAPH_MCP_EXPECTED_UPN', 'Alice@Example.COM');
-    mockAccounts = [{ homeAccountId: 'h1', username: 'alice@example.com' }];
-
-    const result = await verifyIdentityBinding();
-
-    assert.equal(result.checked, true);
-    assert.equal(result.mismatch, false);
-    assert.equal(result.cached_upn, 'alice@example.com');
-    assert.equal(renameCalls.length, 0, 'should not quarantine on case-insensitive match');
-  });
-
-  it('quarantines cache on UPN mismatch', async () => {
-    setEnv('GRAPH_MCP_EXPECTED_UPN', 'alice@example.com');
-    setEnv('USER_SLUG', 'alice');
-    mockAccounts = [{ homeAccountId: 'h1', username: 'bob@example.com' }];
+  it('quarantines cache when object id mismatches', async () => {
+    expectedObjectIdEnv = '44444444-4444-4444-8444-444444444444';
+    mockAccounts = [
+      {
+        homeAccountId: 'h1',
+        username: 'bob@example.com',
+        localAccountId: '55555555-5555-4555-8555-555555555555',
+        idTokenClaims: { oid: '55555555-5555-4555-8555-555555555555' },
+      },
+    ];
 
     const result = await verifyIdentityBinding();
 
     assert.equal(result.checked, true);
     assert.equal(result.mismatch, true);
-    assert.equal(result.cached_upn, 'bob@example.com');
-    assert.equal(result.expected_upn, 'alice@example.com');
-    assert.equal(renameCalls.length, 1, 'should quarantine the cache file');
-
-    // Verify quarantine path format
-    const call = renameCalls[0]!;
-    assert.ok(call.oldPath.endsWith('token-cache.json'), `oldPath should be token-cache.json, got: ${call.oldPath}`);
-    assert.ok(call.newPath.includes('.quarantined'), `newPath should contain .quarantined, got: ${call.newPath}`);
-    assert.ok(result.quarantined_path?.includes('.quarantined'), 'result should include quarantined_path');
+    assert.equal(result.expected_object_id, '44444444-4444-4444-8444-444444444444');
+    assert.equal(result.cached_object_id, '55555555-5555-4555-8555-555555555555');
+    assert.equal(renameCalls.length, 1);
+    assert.ok(result.reason?.includes('TOKEN_IDENTITY_MISMATCH'));
   });
 
-  it('handles rename failure gracefully (non-ENOENT)', async () => {
-    setEnv('GRAPH_MCP_EXPECTED_UPN', 'alice@example.com');
-    mockAccounts = [{ homeAccountId: 'h1', username: 'bob@example.com' }];
+  it('quarantines cache when object id cannot be extracted', async () => {
+    expectedObjectIdEnv = '66666666-6666-4666-8666-666666666666';
+    mockAccounts = [
+      {
+        homeAccountId: 'h1',
+        username: 'bob@example.com',
+        localAccountId: 'not-a-uuid',
+        idTokenClaims: { oid: 'still-not-a-uuid' },
+      },
+    ];
+
+    const result = await verifyIdentityBinding();
+
+    assert.equal(result.checked, true);
+    assert.equal(result.mismatch, true);
+    assert.equal(result.cached_object_id, null);
+    assert.equal(renameCalls.length, 1);
+    assert.ok(result.reason?.includes('TOKEN_IDENTITY_UNKNOWN'));
+  });
+
+  it('handles rename failure gracefully', async () => {
+    expectedObjectIdEnv = '77777777-7777-4777-8777-777777777777';
+    mockAccounts = [
+      {
+        homeAccountId: 'h1',
+        username: 'bob@example.com',
+        localAccountId: '88888888-8888-4888-8888-888888888888',
+      },
+    ];
     renameError = Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' });
 
-    // Should not throw — the function handles rename errors gracefully
     const result = await verifyIdentityBinding();
 
     assert.equal(result.mismatch, true);
-    assert.equal(result.cached_upn, 'bob@example.com');
-  });
-
-  it('is idempotent — second call after quarantine finds no accounts', async () => {
-    setEnv('GRAPH_MCP_EXPECTED_UPN', 'alice@example.com');
-    mockAccounts = [{ homeAccountId: 'h1', username: 'bob@example.com' }];
-
-    const first = await verifyIdentityBinding();
-    assert.equal(first.mismatch, true);
-
-    // After quarantine, MSAL state was cleared. Simulate empty cache on next boot.
-    mockAccounts = [];
-    renameCalls = [];
-
-    const second = await verifyIdentityBinding();
-    assert.equal(second.checked, true);
-    assert.equal(second.mismatch, false);
-    assert.equal(second.cached_upn, null);
-    assert.equal(renameCalls.length, 0, 'should not quarantine again');
+    assert.equal(result.cached_user, 'bob@example.com');
   });
 });

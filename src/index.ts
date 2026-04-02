@@ -17,13 +17,15 @@ async function main(): Promise<void> {
   loadConfig(); // validate config early
   await auditLogger.init();
 
-  // Identity-pinning: verify cached MSAL identity matches expected UPN.
+  // Identity-pinning: verify cached MSAL identity matches expected Entra object ID.
   // Runs before any auth operations — quarantines stale/wrong caches early.
   const idCheck = await verifyIdentityBinding();
   if (idCheck.mismatch) {
     log.warn('Cached identity quarantined — fresh login required', {
-      cached: idCheck.cached_upn,
-      expected: idCheck.expected_upn,
+      cached_user: idCheck.cached_user,
+      cached_object_id: idCheck.cached_object_id,
+      expected_object_id: idCheck.expected_object_id,
+      reason: idCheck.reason,
       quarantined: idCheck.quarantined_path,
     });
   }

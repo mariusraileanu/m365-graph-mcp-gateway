@@ -546,31 +546,10 @@ export async function verifyIdentityBinding(): Promise<IdentityVerificationResul
     };
   }
 
-  // Resolve cached account (cheap — reads MSAL in-memory cache / disk once)
-  let account: AccountInfo | null;
-  try {
-    account = await resolveAccount();
-  } catch {
-    // e.g. MULTIPLE_ACCOUNTS_IN_CACHE — quarantine regardless
-    account = null;
-  }
+  const app = await getMsal();
+  const accounts = await app.getTokenCache().getAllAccounts();
 
-  if (!account) {
-    if (lastIdentityMismatchError) {
-      log.warn('Identity binding mismatch detected at startup', {
-        slug,
-        expected_object_id: expectedOid,
-        reason: lastIdentityMismatchError,
-      });
-      return {
-        checked: true,
-        mismatch: true,
-        cached_user: null,
-        cached_object_id: null,
-        expected_object_id: expectedOid,
-        reason: lastIdentityMismatchError,
-      };
-    }
+  if (accounts.length === 0) {
     log.info('Identity binding check skipped — no cached account', {
       slug,
       expected_object_id: expectedOid,
@@ -584,8 +563,33 @@ export async function verifyIdentityBinding(): Promise<IdentityVerificationResul
     };
   }
 
-  const cachedUser = account.username;
-  const cachedOid = extractAccountObjectId(account);
+  if (accounts.length > 1) {
+    const reason = 'MULTIPLE_ACCOUNTS_IN_CACHE: this gateway is designed for one user only. Run --logout and authenticate again.';
+    let quarantinedPath: string | null = null;
+    try {
+      quarantinedPath = await quarantineTokenCache(reason);
+    } catch {
+      quarantinedPath = null;
+    }
+    lastIdentityMismatchError = reason;
+    lastKnownAccount = null;
+    msal = null;
+    graph = null;
+    resolvedKey = undefined;
+    return {
+      checked: true,
+      mismatch: true,
+      cached_user: null,
+      cached_object_id: null,
+      expected_object_id: expectedOid,
+      reason,
+      quarantined_path: quarantinedPath ?? undefined,
+    };
+  }
+
+  const account = accounts[0];
+  const cachedUser = account?.username ?? null;
+  const cachedOid = account ? extractAccountObjectId(account) : null;
 
   if (cachedOid && cachedOid === expectedOid) {
     log.info('Identity verified', { slug, user: cachedUser, object_id: cachedOid });
@@ -609,18 +613,11 @@ export async function verifyIdentityBinding(): Promise<IdentityVerificationResul
     user: cachedUser,
   });
 
-  const cachePath = await getTokenCachePath();
-  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const quarantinedPath = `${cachePath}.${timestamp}.quarantined`;
-
+  let quarantinedPath: string | null = null;
   try {
-    await fs.promises.rename(cachePath, quarantinedPath);
-    log.info('Token cache quarantined', { from: cachePath, to: quarantinedPath });
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT') {
-      log.error('Failed to quarantine token cache', { error: err instanceof Error ? err.message : String(err) });
-    }
+    quarantinedPath = await quarantineTokenCache(reason);
+  } catch {
+    quarantinedPath = null;
   }
 
   // Clear all in-memory auth state — force fresh login
@@ -637,7 +634,7 @@ export async function verifyIdentityBinding(): Promise<IdentityVerificationResul
     cached_object_id: cachedOid,
     expected_object_id: expectedOid,
     reason,
-    quarantined_path: quarantinedPath,
+    quarantined_path: quarantinedPath ?? undefined,
   };
 }
 

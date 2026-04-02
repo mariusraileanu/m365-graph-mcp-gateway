@@ -651,9 +651,9 @@ deploy_user() {
   log "═══ ${app_name} [${ENV_LABEL}] ═══"
 
   # Verify per-user KV secret for identity binding
-  local upn_secret="${user}-graph-mcp-upn"
-  if ! resource_exists "az keyvault secret show --vault-name '$KV' --name '${upn_secret}'"; then
-    die "Secret '${upn_secret}' missing from Key Vault. Create it with the user's UPN before deploying."
+  local oid_secret="${user}-graph-mcp-object-id"
+  if ! resource_exists "az keyvault secret show --vault-name '$KV' --name '${oid_secret}'"; then
+    die "Secret '${oid_secret}' missing from Key Vault. Create it with the user's Entra object ID before deploying."
   fi
 
   # Container App
@@ -780,8 +780,8 @@ properties:
       - name: encryption-key
         keyVaultUrl: ${kv_uri}/secrets/${KV_SECRET_ENCRYPTION_KEY}
         identity: system
-      - name: expected-upn
-        keyVaultUrl: ${kv_uri}/secrets/${user}-graph-mcp-upn
+      - name: expected-object-id
+        keyVaultUrl: ${kv_uri}/secrets/${user}-graph-mcp-object-id
         identity: system
   template:
     containers:
@@ -799,8 +799,8 @@ properties:
             secretRef: allow-domains
           - name: GRAPH_TOKEN_CACHE_ENCRYPTION_KEY
             secretRef: encryption-key
-          - name: GRAPH_MCP_EXPECTED_UPN
-            secretRef: expected-upn
+          - name: EXPECTED_AAD_OBJECT_ID
+            secretRef: expected-object-id
           - name: HOST
             value: "0.0.0.0"
           - name: NODE_ENV
