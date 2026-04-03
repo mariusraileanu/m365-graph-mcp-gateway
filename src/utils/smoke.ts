@@ -132,13 +132,33 @@ export async function runSmoke(): Promise<void> {
     const toolsResult = await mcpCall(1, 'tools/list', {});
     assertOk('tools/list', toolsResult);
 
-    // A1: Verify exactly 11 tools are registered
-    const toolsPayload = toolsResult.result as { tools?: unknown[] } | undefined;
+    // A1: Verify exactly 20 tools are registered (11 Phase 1 + 9 Phase 2 Teams)
+    const toolsPayload = toolsResult.result as { tools?: Array<{ name?: string }> } | undefined;
     const toolCount = toolsPayload?.tools?.length ?? -1;
-    if (toolCount === 11) {
+    if (toolCount === 20) {
       pass(`tools/list count = ${toolCount}`);
     } else {
-      fail(`tools/list count = ${toolCount} (expected 11)`);
+      fail(`tools/list count = ${toolCount} (expected 20)`);
+    }
+
+    // A2: Verify all 9 Teams tools are present
+    const teamsTool = [
+      'list_chats',
+      'get_chat',
+      'list_chat_messages',
+      'get_chat_message',
+      'send_chat_message',
+      'resolve_meeting',
+      'list_meeting_transcripts',
+      'get_meeting_transcript',
+      'get_transcript_content',
+    ];
+    const registeredNames = new Set((toolsPayload?.tools ?? []).map((t) => t.name));
+    const missingTeams = teamsTool.filter((t) => !registeredNames.has(t));
+    if (missingTeams.length === 0) {
+      pass('all 9 Teams tools registered');
+    } else {
+      fail(`missing Teams tools: ${missingTeams.join(', ')}`);
     }
   } catch (err) {
     fail('tools/list', errMsg(err));
@@ -627,6 +647,116 @@ export async function runSmoke(): Promise<void> {
     assertOk('audit_list', auditResult);
   } catch (err) {
     fail('audit_list', errMsg(err));
+  }
+
+  // ── list_chats ─────────────────────────────────────────
+  log('list_chats');
+  let firstChatId: string | null = null;
+  try {
+    const chatsResult = await mcpCall(70, 'tools/call', {
+      name: 'list_chats',
+      arguments: { top: 5 },
+    });
+    assertOk('list_chats', chatsResult);
+    const sc = (chatsResult.result as { structuredContent?: { chats?: Array<{ id?: string; chat_type?: string }> } })?.structuredContent;
+    const chats = sc?.chats ?? [];
+    if (chats.length > 0) {
+      firstChatId = chats[0]?.id ?? null;
+      pass(`list_chats returned ${chats.length} chat(s), first type=${chats[0]?.chat_type}`);
+    } else {
+      warn('list_chats returned 0 chats (user may have no Teams chats)');
+    }
+  } catch (err) {
+    fail('list_chats', errMsg(err));
+  }
+
+  // ── get_chat ───────────────────────────────────────────
+  log('get_chat');
+  if (firstChatId) {
+    try {
+      const chatResult = await mcpCall(71, 'tools/call', {
+        name: 'get_chat',
+        arguments: { chat_id: firstChatId },
+      });
+      assertOk('get_chat by ID', chatResult);
+      const sc = (chatResult.result as { structuredContent?: { id?: string } })?.structuredContent;
+      if (sc?.id === firstChatId) {
+        pass('get_chat returned correct ID');
+      } else {
+        fail(`get_chat ID mismatch: ${sc?.id} vs ${firstChatId}`);
+      }
+    } catch (err) {
+      fail('get_chat', errMsg(err));
+    }
+  } else {
+    warn('get_chat skipped (no chat found)');
+  }
+
+  // ── list_chat_messages ─────────────────────────────────
+  log('list_chat_messages');
+  if (firstChatId) {
+    try {
+      const msgsResult = await mcpCall(72, 'tools/call', {
+        name: 'list_chat_messages',
+        arguments: { chat_id: firstChatId, top: 5 },
+      });
+      assertOk('list_chat_messages', msgsResult);
+      const sc = (msgsResult.result as { structuredContent?: { messages?: Array<{ id?: string }> } })?.structuredContent;
+      const msgs = sc?.messages ?? [];
+      pass(`list_chat_messages returned ${msgs.length} message(s)`);
+    } catch (err) {
+      fail('list_chat_messages', errMsg(err));
+    }
+  } else {
+    warn('list_chat_messages skipped (no chat found)');
+  }
+
+  // ── send_chat_message — preview (no confirm) ──────────
+  log('send_chat_message — preview');
+  if (firstChatId) {
+    try {
+      const previewResult = await mcpCall(73, 'tools/call', {
+        name: 'send_chat_message',
+        arguments: {
+          chat_id: firstChatId,
+          content: '[Smoke Test] Preview — not actually sent',
+        },
+      });
+      assertOk('send_chat_message preview', previewResult);
+      const sc = (previewResult.result as { structuredContent?: { requires_confirmation?: boolean } })?.structuredContent;
+      if (sc?.requires_confirmation === true) {
+        pass('send_chat_message returns requires_confirmation');
+      } else {
+        fail('send_chat_message preview unexpected shape', JSON.stringify(sc));
+      }
+    } catch (err) {
+      fail('send_chat_message preview', errMsg(err));
+    }
+  } else {
+    warn('send_chat_message preview skipped (no chat found)');
+  }
+
+  // ── resolve_meeting — with invalid URL ────────────────
+  log('resolve_meeting — invalid URL');
+  try {
+    const resolveResult = await mcpCall(74, 'tools/call', {
+      name: 'resolve_meeting',
+      arguments: { join_web_url: 'https://example.com/not-a-teams-url' },
+    });
+    // Expected: MEETING_NOT_RESOLVABLE or VALIDATION_ERROR
+    if (!resolveResult.ok) {
+      const sc = (resolveResult.result as { structuredContent?: { error_code?: string } })?.structuredContent;
+      const code = sc?.error_code ?? '';
+      if (code === 'MEETING_NOT_RESOLVABLE' || code === 'VALIDATION_ERROR') {
+        pass(`resolve_meeting invalid URL → ${code}`);
+      } else {
+        fail(`resolve_meeting invalid URL → unexpected error: ${code}`, resolveResult.raw);
+      }
+    } else {
+      warn('resolve_meeting invalid URL succeeded unexpectedly');
+    }
+  } catch (err) {
+    fail('resolve_meeting invalid URL', errMsg(err));
   }
 
   // ── Summary ─────────────────────────────────────────────
