@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { isLoggedIn } from '../auth/index.js';
-import { ok, fail, compactText } from '../utils/helpers.js';
+import { ok, fail } from '../utils/helpers.js';
 import { graphCache } from '../utils/cache.js';
 import { resolveMeeting, listMeetingTranscripts, getMeetingTranscript, getTranscriptContent, pickTranscript } from '../graph/teams.js';
 import type { ToolSpec } from '../utils/types.js';
@@ -174,15 +174,20 @@ export const teamsMeetingTools: ToolSpec[] = [
         throw err;
       }
 
-      const compact = compactText(vttContent, maxChars);
+      // Transcripts are primary content — bypass the global hardMaxChars cap.
+      // The schema already limits max_chars to 50 000; default to full content.
+      const limit = maxChars ?? vttContent.length;
+      const safeLimit = Math.max(200, Math.min(limit, 50_000));
+      const normalized = vttContent.replace(/\r\n/g, '\n').trim();
+      const content = normalized.slice(0, safeLimit);
       return ok('Transcript content retrieved.', {
         available: true,
         meeting_id: meetingId,
         transcript_id: transcriptId,
         format: 'text/vtt',
-        content: compact.text,
-        truncated: compact.truncated,
-        content_length: vttContent.length,
+        content,
+        truncated: normalized.length > content.length,
+        content_length: normalized.length,
       });
     },
   },
