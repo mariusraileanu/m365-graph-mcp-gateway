@@ -143,12 +143,7 @@ export const getTools: ToolSpec[] = [
       const itemId = encodeURIComponent(String(params.item_id));
       const cacheKey = `file:${params.drive_id}:${params.item_id}`;
       const cached = graphCache.get(cacheKey) as Record<string, unknown> | undefined;
-      const item =
-        cached ??
-        (await getGraph()
-          .api(`/drives/${driveId}/items/${itemId}`)
-          .select('id,name,size,file,webUrl,lastModifiedDateTime,createdDateTime,createdBy,lastModifiedBy,parentReference')
-          .get());
+      const item = cached ?? (await getGraph().api(`/drives/${driveId}/items/${itemId}`).get());
       if (!cached) graphCache.set(cacheKey, item as Record<string, unknown>, CACHE_TTL_MS);
       return ok('File metadata retrieved.', pickFile(item as Record<string, unknown>, includeFull(params)));
     },
@@ -178,10 +173,7 @@ export const getTools: ToolSpec[] = [
       const mode = params.mode ?? 'metadata';
 
       // Step 1: Get metadata (includes @microsoft.graph.downloadUrl)
-      const meta = (await getGraph().api(`/drives/${driveId}/items/${itemId}`).select('id,name,size,file,webUrl').get()) as Record<
-        string,
-        unknown
-      >;
+      const meta = (await getGraph().api(`/drives/${driveId}/items/${itemId}`).get()) as Record<string, unknown>;
 
       const fileSize = Number(meta.size || 0);
       const fileName = String(meta.name || 'unknown');
