@@ -128,19 +128,26 @@ export async function sendChatMessage(chatId: string, content: string): Promise<
 // ── Meeting API calls ───────────────────────────────────────────────────────
 
 export async function resolveMeeting(joinWebUrl: string): Promise<Record<string, unknown> | null> {
-  const response = await getGraph()
-    .api('/me/onlineMeetings')
-    .filter(`joinWebUrl eq '${escapeODataString(joinWebUrl)}'`)
-    .select('id,subject,startDateTime,endDateTime,joinWebUrl,chatInfo,participants')
-    .get();
-  const meetings = (response as { value?: Array<Record<string, unknown>> }).value ?? [];
-  return meetings[0] ?? null;
+  // The /me/onlineMeetings endpoint does NOT support $select — it returns
+  // "Query option 'Select' is not allowed" if the SDK adds one.  Using a raw
+  // fetch with only $filter (the one supported query option) avoids the issue.
+  const token = await getAccessToken();
+  const filter = `JoinWebUrl eq '${escapeODataString(joinWebUrl)}'`;
+  const endpoint = `https://graph.microsoft.com/v1.0/me/onlineMeetings?$filter=${encodeURIComponent(filter)}`;
+  const res = await fetch(endpoint, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`UPSTREAM_ERROR: resolve meeting failed (${res.status}) ${body.slice(0, 300)}`);
+  }
+  const data = (await res.json()) as { value?: Array<Record<string, unknown>> };
+  return data.value?.[0] ?? null;
 }
 
 export async function listMeetingTranscripts(meetingId: string): Promise<{ transcripts: Record<string, unknown>[]; count: number }> {
   const response = await getGraph()
     .api(`/me/onlineMeetings/${encodeURIComponent(meetingId)}/transcripts`)
-    .select('id,meetingId,callId,createdDateTime,endDateTime,contentCorrelationId,meetingOrganizer')
     .get();
   const transcripts = (response as { value?: Array<Record<string, unknown>> }).value ?? [];
   return { transcripts, count: transcripts.length };
@@ -149,7 +156,6 @@ export async function listMeetingTranscripts(meetingId: string): Promise<{ trans
 export async function getMeetingTranscript(meetingId: string, transcriptId: string): Promise<Record<string, unknown>> {
   return await getGraph()
     .api(`/me/onlineMeetings/${encodeURIComponent(meetingId)}/transcripts/${encodeURIComponent(transcriptId)}`)
-    .select('id,meetingId,callId,createdDateTime,endDateTime,contentCorrelationId,meetingOrganizer')
     .get();
 }
 
