@@ -5,7 +5,13 @@ import assert from 'node:assert/strict';
 
 let acquireTokenResult: Array<{ token?: string; error?: Error }> = [];
 let acquireCallCount = 0;
-let mockAccounts: Array<{ homeAccountId: string; username: string }> = [{ homeAccountId: 'home-1', username: 'test@example.com' }];
+const MOCK_OID = '11111111-1111-4111-8111-111111111111';
+let mockAccounts: Array<{
+  homeAccountId: string;
+  username: string;
+  localAccountId: string;
+  idTokenClaims: Record<string, unknown>;
+}> = [{ homeAccountId: 'home-1', username: 'test@example.com', localAccountId: MOCK_OID, idTokenClaims: { oid: MOCK_OID } }];
 
 // ── Module-level mocks (before dynamic import) ─────────────────────────────
 
@@ -23,7 +29,7 @@ mock.module('../config/index.js', {
       search: { defaultTop: 10, maxTop: 50 },
       calendar: { defaultTimezone: 'UTC' },
       storage: { tokenPath: 'tokens', encryptionKey: '' },
-      server: { apiKey: undefined },
+      server: { apiKey: undefined, expectedAadObjectId: MOCK_OID },
     }),
   },
 });
@@ -31,6 +37,7 @@ mock.module('../config/index.js', {
 mock.module('../utils/helpers.js', {
   namedExports: {
     resolveStoragePath: () => '/tmp/test-tokens',
+    requireUserSlug: () => 'test-user',
   },
 });
 
@@ -100,14 +107,14 @@ const { getAccessToken, isLoggedIn, currentUser } = await import('./index.js');
 
 // ── Tests ───────────────────────────────────────────────────────────────────
 
-describe('resolveAccount — single-account enforcement', () => {
+describe('resolveAccount — OID-based matching', () => {
   beforeEach(() => {
     acquireCallCount = 0;
     acquireTokenResult = [];
   });
 
-  it('returns user when exactly one account in cache', async () => {
-    mockAccounts = [{ homeAccountId: 'home-1', username: 'test@example.com' }];
+  it('returns user when account OID matches expected', async () => {
+    mockAccounts = [{ homeAccountId: 'home-1', username: 'test@example.com', localAccountId: MOCK_OID, idTokenClaims: { oid: MOCK_OID } }];
     assert.equal(await isLoggedIn(), true);
     assert.equal(await currentUser(), 'test@example.com');
   });
@@ -118,12 +125,36 @@ describe('resolveAccount — single-account enforcement', () => {
     assert.equal(await currentUser(), null);
   });
 
-  it('throws MULTIPLE_ACCOUNTS_IN_CACHE when >1 accounts', async () => {
+  it('selects matching account when multiple accounts exist', async () => {
     mockAccounts = [
-      { homeAccountId: 'home-1', username: 'alice@example.com' },
-      { homeAccountId: 'home-2', username: 'bob@example.com' },
+      {
+        homeAccountId: 'home-1',
+        username: 'alice@example.com',
+        localAccountId: '99999999-9999-4999-8999-999999999999',
+        idTokenClaims: { oid: '99999999-9999-4999-8999-999999999999' },
+      },
+      {
+        homeAccountId: 'home-2',
+        username: 'bob@example.com',
+        localAccountId: MOCK_OID,
+        idTokenClaims: { oid: MOCK_OID },
+      },
     ];
-    await assert.rejects(() => isLoggedIn(), /MULTIPLE_ACCOUNTS_IN_CACHE/);
+    assert.equal(await isLoggedIn(), true);
+    assert.equal(await currentUser(), 'bob@example.com');
+  });
+
+  it('returns null when no account OID matches (quarantines cache)', async () => {
+    mockAccounts = [
+      {
+        homeAccountId: 'home-1',
+        username: 'alice@example.com',
+        localAccountId: '99999999-9999-4999-8999-999999999999',
+        idTokenClaims: { oid: '99999999-9999-4999-8999-999999999999' },
+      },
+    ];
+    assert.equal(await isLoggedIn(), false);
+    assert.equal(await currentUser(), null);
   });
 
   it('throws AUTH_REQUIRED from getAccessToken when zero accounts', async () => {
@@ -136,7 +167,7 @@ describe('getAccessToken — retry logic', () => {
   beforeEach(() => {
     acquireCallCount = 0;
     acquireTokenResult = [];
-    mockAccounts = [{ homeAccountId: 'home-1', username: 'test@example.com' }];
+    mockAccounts = [{ homeAccountId: 'home-1', username: 'test@example.com', localAccountId: MOCK_OID, idTokenClaims: { oid: MOCK_OID } }];
   });
 
   it('returns token on first successful attempt', async () => {

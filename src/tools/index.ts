@@ -5,6 +5,8 @@ import { composeEmailTools } from './compose-email.js';
 import { scheduleMeetingTools } from './schedule-meeting.js';
 import { respondMeetingTools } from './respond-meeting.js';
 import { auditTools } from './audit.js';
+import { teamsChatTools } from './teams-chat.js';
+import { teamsMeetingTools } from './teams-meeting.js';
 import { fail, normalizeError } from '../utils/helpers.js';
 import type { ToolSpec, ToolResult } from '../utils/types.js';
 
@@ -16,6 +18,8 @@ export const tools: ToolSpec[] = [
   ...scheduleMeetingTools,
   ...respondMeetingTools,
   ...auditTools,
+  ...teamsChatTools,
+  ...teamsMeetingTools,
 ];
 
 const toolMap = new Map(tools.map((t) => [t.name, t]));

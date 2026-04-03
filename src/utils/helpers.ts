@@ -3,25 +3,35 @@ import path from 'path';
 import { loadConfig } from '../config/index.js';
 import type { Json, ToolSuccess, ToolFailure, ToolResult } from './types.js';
 
+/**
+ * Validate and return USER_SLUG from the environment.
+ * USER_SLUG is part of the security model — it determines cache path isolation
+ * and appears in audit/log context. Required in all environments.
+ */
+export function requireUserSlug(): string {
+  const raw = process.env.USER_SLUG;
+  if (!raw) {
+    throw new Error('CONFIG_ERROR: USER_SLUG is required — set it in .env (e.g. USER_SLUG=dev-local)');
+  }
+  const slug = raw.trim().toLowerCase();
+  if (raw !== slug || !/^[a-z][a-z0-9-]{1,30}$/.test(slug)) {
+    throw new Error(`INVALID_USER_SLUG: '${raw}' — must be lowercase alphanumeric + hyphens, 2-31 chars, start with letter`);
+  }
+  return slug;
+}
+
 export function resolveStoragePath(configPath: string): string {
-  const userSlugRaw = process.env.USER_SLUG;
-  const userSlug = userSlugRaw?.trim().toLowerCase();
+  const userSlug = requireUserSlug();
   // Azure: NFS share mounted at /app/data, scoped by USER_SLUG
-  if (userSlugRaw) {
-    if (userSlugRaw !== userSlug || !/^[a-z][a-z0-9-]{1,30}$/.test(userSlug)) {
-      throw new Error(`INVALID_USER_SLUG: '${userSlugRaw}'`);
-    }
-    if (!fs.existsSync('/app/data')) {
-      throw new Error('STORAGE_PATH_ERROR: USER_SLUG is set but /app/data is not mounted');
-    }
+  if (fs.existsSync('/app/data')) {
     return path.resolve('/app/data', userSlug, configPath);
   }
-  // Docker / bare container: /app exists but no USER_SLUG
+  // Container without NFS mount — broken deployment
   if (fs.existsSync('/app')) {
-    return path.resolve('/app', configPath);
+    throw new Error('STORAGE_PATH_ERROR: /app exists but /app/data is not mounted — check NFS volume');
   }
-  // Local dev
-  return path.resolve(process.cwd(), 'data', configPath);
+  // Local dev: same slug-scoped layout under cwd/data/
+  return path.resolve(process.cwd(), 'data', userSlug, configPath);
 }
 
 /** Escape a value for use inside an OData single-quoted string literal. */
@@ -90,8 +100,15 @@ export function normalizeError(err: unknown): { code: string; message: string } 
   const message = err instanceof Error ? err.message : String(err);
   if (message.startsWith('AUTH_REQUIRED')) return { code: 'AUTH_REQUIRED', message };
   if (message.startsWith('AUTH_EXPIRED')) return { code: 'AUTH_EXPIRED', message };
+  if (message.startsWith('AUTH_MISMATCH')) return { code: 'AUTH_MISMATCH', message };
+  if (message.startsWith('CONFIG_ERROR')) return { code: 'CONFIG_ERROR', message };
+  if (message.startsWith('TOKEN_CACHE_CORRUPTED')) return { code: 'TOKEN_CACHE_CORRUPTED', message };
+  if (message.startsWith('FILE_TOO_LARGE')) return { code: 'FILE_TOO_LARGE', message };
   if (message.startsWith('MULTIPLE_ACCOUNTS_IN_CACHE')) return { code: 'MULTIPLE_ACCOUNTS_IN_CACHE', message };
   if (message.startsWith('CACHE_DECRYPTION_FAILED')) return { code: 'CACHE_DECRYPTION_FAILED', message };
+  if (message.startsWith('MEETING_NOT_RESOLVABLE')) return { code: 'MEETING_NOT_RESOLVABLE', message };
+  if (message.startsWith('MISSING_JOIN_WEB_URL')) return { code: 'MISSING_JOIN_WEB_URL', message };
+  if (message.startsWith('TRANSCRIPT_NOT_AVAILABLE')) return { code: 'TRANSCRIPT_NOT_AVAILABLE', message };
   if (message.includes('not in allowlist')) return { code: 'FORBIDDEN', message };
   if (message.includes('required')) return { code: 'VALIDATION_ERROR', message };
   if (message.includes('not found')) return { code: 'NOT_FOUND', message };

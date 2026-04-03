@@ -18,8 +18,13 @@
  *     and scale-to-zero events. It is encrypted at rest with AES-256-GCM
  *     when GRAPH_TOKEN_CACHE_ENCRYPTION_KEY is configured.
  *
- *   - If the MSAL cache somehow contains multiple accounts, this is treated
- *     as an invalid state (not silently resolved by picking one).
+ *   - If the MSAL cache contains multiple accounts, this is treated as an
+ *     invalid state. The correct account is selected by OID match — never
+ *     by picking the first account.
+ *
+ *   - EXPECTED_AAD_OBJECT_ID is REQUIRED. Without it, the gateway refuses
+ *     to operate (login, token acquisition, identity verification all fail).
+ *     This ensures every deployment is pinned to exactly one Entra identity.
  *
  *   Do NOT refactor this into a shared auth service, multi-user token broker,
  *   ConfidentialClientApplication, or OBO architecture.
@@ -39,7 +44,7 @@ import {
 import { Client } from '@microsoft/microsoft-graph-client';
 import open from 'open';
 import { loadConfig } from '../config/index.js';
-import { resolveStoragePath } from '../utils/helpers.js';
+import { resolveStoragePath, requireUserSlug } from '../utils/helpers.js';
 import { log } from '../utils/log.js';
 import { encryptTokenCache, decryptTokenCache, parseEncryptionKey, isEncryptedCache } from './crypto.js';
 import { atomicWriteFile, safeReadFile } from '../utils/file.js';
@@ -55,7 +60,7 @@ let graph: Client | null = null;
 /**
  * Convenience cache of the current account. Updated by resolveAccount()
  * and login flows. NOT a fallback for ambiguous identity resolution —
- * resolveAccount() enforces the single-account invariant independently.
+ * resolveAccount() enforces OID-based selection independently.
  */
 let lastKnownAccount: AccountInfo | null = null;
 
@@ -69,6 +74,12 @@ async function getTokenCachePath(): Promise<string> {
   const dir = resolveStoragePath(loadConfig().storage.tokenPath);
   await fs.promises.mkdir(dir, { recursive: true });
   return path.join(dir, 'token-cache.json');
+}
+
+async function getTokenCacheMetadataPath(): Promise<string> {
+  const dir = resolveStoragePath(loadConfig().storage.tokenPath);
+  await fs.promises.mkdir(dir, { recursive: true });
+  return path.join(dir, 'token-cache.meta.json');
 }
 
 function normalizeObjectId(value: string): string {
@@ -86,6 +97,18 @@ function expectedObjectId(): string | null {
   return isObjectId(normalized) ? normalized : null;
 }
 
+/**
+ * Require EXPECTED_AAD_OBJECT_ID to be set and valid.
+ * Throws CONFIG_ERROR if missing or malformed.
+ */
+function requireExpectedObjectId(): string {
+  const oid = expectedObjectId();
+  if (!oid) {
+    throw new Error('CONFIG_ERROR: EXPECTED_AAD_OBJECT_ID is required. Set it in .env or as an environment variable.');
+  }
+  return oid;
+}
+
 function extractAccountObjectId(account: AccountInfo): string | null {
   const claims = account.idTokenClaims as Record<string, unknown> | undefined;
   const claimOid = typeof claims?.oid === 'string' ? claims.oid : '';
@@ -95,6 +118,47 @@ function extractAccountObjectId(account: AccountInfo): string | null {
   if (localAccountId && isObjectId(localAccountId)) return normalizeObjectId(localAccountId);
 
   return null;
+}
+
+// ── Account matching by OID ─────────────────────────────────────────────────
+
+type AccountMatchResult =
+  | { kind: 'matched'; account: AccountInfo }
+  | { kind: 'no_match'; cached: AccountInfo[]; reason: string }
+  | { kind: 'multi_match'; cached: AccountInfo[]; reason: string };
+
+/**
+ * Find the account in the MSAL cache that matches EXPECTED_AAD_OBJECT_ID.
+ *
+ * - 0 accounts → no_match (not logged in)
+ * - 1+ accounts, exactly 1 OID match → matched
+ * - 1+ accounts, 0 OID matches → no_match (wrong user or unknown OID)
+ * - 1+ accounts, >1 OID matches → multi_match (corrupted cache, fail closed)
+ */
+function findMatchingAccount(accounts: AccountInfo[], expectedOid: string): AccountMatchResult {
+  const matches = accounts.filter((a) => {
+    const oid = extractAccountObjectId(a);
+    return oid !== null && oid === expectedOid;
+  });
+
+  if (matches.length === 1) {
+    return { kind: 'matched', account: matches[0]! };
+  }
+
+  if (matches.length === 0) {
+    const reason =
+      accounts.length === 0
+        ? 'No cached accounts'
+        : `No account matches expected OID ${expectedOid} (${accounts.length} cached account(s))`;
+    return { kind: 'no_match', cached: accounts, reason };
+  }
+
+  // >1 matches — this should never happen, fail closed
+  return {
+    kind: 'multi_match',
+    cached: accounts,
+    reason: `Multiple accounts match OID ${expectedOid} — corrupted cache`,
+  };
 }
 
 async function quarantineTokenCache(reason: string): Promise<string | null> {
@@ -120,39 +184,40 @@ async function quarantineTokenCache(reason: string): Promise<string | null> {
   }
 }
 
-async function enforceExpectedIdentity(account: AccountInfo): Promise<boolean> {
-  const expected = expectedObjectId();
-  if (!expected) {
-    lastIdentityMismatchError = null;
-    return true;
+// ── Token cache metadata ────────────────────────────────────────────────────
+
+interface TokenCacheMetadata {
+  expected_aad_object_id: string;
+  user_slug: string;
+  created_at: string;
+  last_validated_at: string;
+}
+
+async function writeTokenCacheMetadata(expectedOid: string): Promise<void> {
+  const metaPath = await getTokenCacheMetadataPath();
+  const slug = requireUserSlug();
+  const now = new Date().toISOString();
+
+  // Preserve created_at from existing metadata
+  let createdAt = now;
+  try {
+    const existing = await safeReadFile(metaPath);
+    if (existing) {
+      const parsed = JSON.parse(existing) as Partial<TokenCacheMetadata>;
+      if (parsed.created_at) createdAt = parsed.created_at;
+    }
+  } catch {
+    // ignore parse errors — overwrite with fresh metadata
   }
 
-  const actual = extractAccountObjectId(account);
-  const user = account.username || 'unknown';
+  const metadata: TokenCacheMetadata = {
+    expected_aad_object_id: expectedOid,
+    user_slug: slug,
+    created_at: createdAt,
+    last_validated_at: now,
+  };
 
-  if (actual && actual === expected) {
-    lastIdentityMismatchError = null;
-    return true;
-  }
-
-  const reason = actual
-    ? `TOKEN_IDENTITY_MISMATCH expected=${expected} actual=${actual} user=${user}`
-    : `TOKEN_IDENTITY_UNKNOWN expected=${expected} user=${user}`;
-  await quarantineTokenCache(reason);
-
-  lastIdentityMismatchError = reason;
-  lastKnownAccount = null;
-  msal = null;
-  graph = null;
-
-  log.error('Token identity validation failed; cache quarantined and login reset', {
-    expected_object_id: expected,
-    actual_object_id: actual,
-    user,
-    reason,
-  });
-
-  return false;
+  await atomicWriteFile(metaPath, JSON.stringify(metadata, null, 2), 0o600);
 }
 
 // ── Encryption key (resolved once, cached) ──────────────────────────────────
@@ -239,17 +304,20 @@ async function getMsal(): Promise<PublicClientApplication> {
   return msal;
 }
 
-// ── Account resolution (single-account enforcement) ─────────────────────────
+// ── Account resolution (OID-based selection) ────────────────────────────────
 
 /**
- * Resolve the current account from the MSAL cache.
+ * Resolve the current account from the MSAL cache using OID-based matching.
  *
- * Enforces the single-user-per-gateway invariant:
- *   0 accounts → null (not logged in)
- *   1 account  → that account
- *  >1 accounts → error (invalid state)
+ * Requires EXPECTED_AAD_OBJECT_ID — throws CONFIG_ERROR if not set.
+ * Uses findMatchingAccount() to select the correct account by OID.
+ *
+ *   matched     → return that account
+ *   no_match    → null (not logged in, or wrong user's cache)
+ *   multi_match → quarantine + throw (corrupted state)
  */
 async function resolveAccount(): Promise<AccountInfo | null> {
+  const expectedOid = requireExpectedObjectId();
   const app = await getMsal();
   const accounts = await app.getTokenCache().getAllAccounts();
 
@@ -258,22 +326,44 @@ async function resolveAccount(): Promise<AccountInfo | null> {
     return null;
   }
 
-  if (accounts.length === 1) {
-    const account = accounts[0] ?? null;
-    if (!account) {
-      lastKnownAccount = null;
-      return null;
-    }
-    const identityOk = await enforceExpectedIdentity(account);
-    if (!identityOk) {
-      return null;
-    }
-    lastKnownAccount = account;
-    return lastKnownAccount;
-  }
+  const result = findMatchingAccount(accounts, expectedOid);
 
-  // >1 accounts — this gateway should only ever have one
-  throw new Error('MULTIPLE_ACCOUNTS_IN_CACHE: this gateway is designed for one user only. Run --logout and authenticate again.');
+  switch (result.kind) {
+    case 'matched':
+      lastKnownAccount = result.account;
+      lastIdentityMismatchError = null;
+      return result.account;
+
+    case 'no_match': {
+      // Wrong user's cache — quarantine it
+      const reason = `AUTH_MISMATCH: ${result.reason}`;
+      await quarantineTokenCache(reason);
+      lastIdentityMismatchError = reason;
+      lastKnownAccount = null;
+      msal = null;
+      graph = null;
+      log.error('Account resolution failed — no OID match; cache quarantined', {
+        expected_object_id: expectedOid,
+        cached_count: result.cached.length,
+        reason: result.reason,
+      });
+      return null;
+    }
+
+    case 'multi_match': {
+      const reason = `TOKEN_CACHE_CORRUPTED: ${result.reason}`;
+      await quarantineTokenCache(reason);
+      lastIdentityMismatchError = reason;
+      lastKnownAccount = null;
+      msal = null;
+      graph = null;
+      log.error('Multiple accounts match expected OID — cache quarantined', {
+        expected_object_id: expectedOid,
+        match_count: result.cached.length,
+      });
+      throw new Error(`TOKEN_CACHE_CORRUPTED: ${result.reason}. Run --logout and re-authenticate.`);
+    }
+  }
 }
 
 // ── Public API — auth state ─────────────────────────────────────────────────
@@ -301,10 +391,15 @@ let pendingDeviceCodeError: string | null = null;
 /**
  * Start a device-code login and return the code/URL immediately.
  *
+ * Requires EXPECTED_AAD_OBJECT_ID — throws CONFIG_ERROR if not set.
+ *
  * The actual token acquisition continues in the background. Callers should
  * use `deviceCodeLoginStatus()` to poll for completion.
  */
 export async function startDeviceCodeLogin(): Promise<DeviceCodeInfo> {
+  // Guard: OID must be configured before any login
+  requireExpectedObjectId();
+
   // If there's already a pending flow, return the existing code info
   if (pendingDeviceCodeInfo && pendingDeviceCodePromise) {
     return pendingDeviceCodeInfo;
@@ -352,10 +447,12 @@ export async function startDeviceCodeLogin(): Promise<DeviceCodeInfo> {
   // background so we can return the code to the caller immediately.
   pendingDeviceCodePromise = app
     .acquireTokenByDeviceCode(request)
-    .then((response) => {
+    .then(async (response) => {
       if (!response?.account) throw new Error('LOGIN_FAILED: device code login did not return an account');
       lastKnownAccount = response.account;
-      // cachePlugin.afterCacheAccess persists tokens automatically
+      // Write metadata on successful login
+      const oid = expectedObjectId();
+      if (oid) await writeTokenCacheMetadata(oid).catch(() => {});
     })
     .catch((err) => {
       pendingDeviceCodeError = err instanceof Error ? err.message : String(err);
@@ -394,6 +491,9 @@ async function loginDeviceCode(): Promise<void> {
 }
 
 async function loginInteractive(): Promise<void> {
+  // Guard: OID must be configured before any login
+  requireExpectedObjectId();
+
   const app = await getMsal();
 
   const response = await app.acquireTokenInteractive({
@@ -405,7 +505,10 @@ async function loginInteractive(): Promise<void> {
 
   if (!response?.account) throw new Error('LOGIN_FAILED: interactive login did not return an account');
   lastKnownAccount = response.account;
-  // cachePlugin.afterCacheAccess persists tokens automatically
+
+  // Write metadata on successful login
+  const oid = expectedObjectId();
+  if (oid) await writeTokenCacheMetadata(oid).catch(() => {});
 }
 
 export async function login(mode: LoginMode): Promise<void> {
@@ -418,6 +521,8 @@ export async function login(mode: LoginMode): Promise<void> {
     await loginInteractive();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    // Re-throw CONFIG_ERROR as-is
+    if (message.startsWith('CONFIG_ERROR')) throw error;
     throw new Error(`INTERACTIVE_LOGIN_FAILED: ${message}. Use --login-device if running headless.`);
   }
 }
@@ -446,6 +551,14 @@ export async function logout(): Promise<void> {
     } else {
       log.warn('Failed to remove token cache file', { path: cachePath, error: err instanceof Error ? err.message : String(err) });
     }
+  }
+
+  // Remove metadata file
+  const metaPath = await getTokenCacheMetadataPath();
+  try {
+    await fs.promises.unlink(metaPath);
+  } catch {
+    // ignore — metadata file is best-effort
   }
 }
 
@@ -522,29 +635,19 @@ export interface IdentityVerificationResult {
  * Verify that the cached MSAL identity matches the expected Entra object ID for this
  * container's USER_SLUG. Called once at startup.
  *
- * - If EXPECTED_AAD_OBJECT_ID is not set, the check is skipped (backward compat).
- * - If no account is cached (not logged in), the check is skipped.
- * - If the object ID matches, logs success and returns.
- * - If the object ID does NOT match, quarantines the cache file, clears in-memory
- *   state, and returns a mismatch result so the caller can log and continue.
+ * Requires EXPECTED_AAD_OBJECT_ID — throws CONFIG_ERROR if not set.
+ *
+ * Uses findMatchingAccount() for OID-based selection:
+ *   - matched     → logs success, writes metadata, returns OK
+ *   - no_match    → quarantines cache, returns mismatch
+ *   - multi_match → quarantines cache, returns mismatch (fail closed)
  *
  * This function is idempotent: after quarantine the cache is empty, so
  * subsequent calls find 0 accounts and skip.
  */
 export async function verifyIdentityBinding(): Promise<IdentityVerificationResult> {
-  const expectedOid = expectedObjectId();
-  const slug = process.env.USER_SLUG ?? 'unknown';
-
-  if (!expectedOid) {
-    log.info('Identity binding check skipped — EXPECTED_AAD_OBJECT_ID not set', { slug });
-    return {
-      checked: false,
-      mismatch: false,
-      cached_user: null,
-      cached_object_id: null,
-      expected_object_id: null,
-    };
-  }
+  const expectedOid = requireExpectedObjectId();
+  const slug = requireUserSlug();
 
   const app = await getMsal();
   const accounts = await app.getTokenCache().getAllAccounts();
@@ -563,79 +666,98 @@ export async function verifyIdentityBinding(): Promise<IdentityVerificationResul
     };
   }
 
-  if (accounts.length > 1) {
-    const reason = 'MULTIPLE_ACCOUNTS_IN_CACHE: this gateway is designed for one user only. Run --logout and authenticate again.';
-    let quarantinedPath: string | null = null;
-    try {
-      quarantinedPath = await quarantineTokenCache(reason);
-    } catch {
-      quarantinedPath = null;
+  const matchResult = findMatchingAccount(accounts, expectedOid);
+
+  switch (matchResult.kind) {
+    case 'matched': {
+      const account = matchResult.account;
+      const cachedUser = account.username ?? null;
+      const cachedOid = extractAccountObjectId(account);
+      log.info('Identity verified', { slug, user: cachedUser, object_id: cachedOid });
+
+      // Write/update metadata on successful verification
+      await writeTokenCacheMetadata(expectedOid).catch(() => {});
+
+      return {
+        checked: true,
+        mismatch: false,
+        cached_user: cachedUser,
+        cached_object_id: cachedOid,
+        expected_object_id: expectedOid,
+      };
     }
-    lastIdentityMismatchError = reason;
-    lastKnownAccount = null;
-    msal = null;
-    graph = null;
-    resolvedKey = undefined;
-    return {
-      checked: true,
-      mismatch: true,
-      cached_user: null,
-      cached_object_id: null,
-      expected_object_id: expectedOid,
-      reason,
-      quarantined_path: quarantinedPath ?? undefined,
-    };
+
+    case 'no_match': {
+      const reason =
+        accounts.length > 0 ? `TOKEN_IDENTITY_MISMATCH expected=${expectedOid} cached_count=${accounts.length}` : `No cached accounts`;
+      log.warn('TOKEN_IDENTITY_MISMATCH', {
+        slug,
+        expected_object_id: expectedOid,
+        cached_count: accounts.length,
+      });
+
+      let quarantinedPath: string | null = null;
+      try {
+        quarantinedPath = await quarantineTokenCache(reason);
+      } catch {
+        quarantinedPath = null;
+      }
+
+      // Clear all in-memory auth state — force fresh login
+      lastIdentityMismatchError = reason;
+      lastKnownAccount = null;
+      msal = null;
+      graph = null;
+      resolvedKey = undefined;
+
+      // Report the first cached account for diagnostics
+      const firstAccount = accounts[0];
+      const cachedUser = firstAccount?.username ?? null;
+      const cachedOid = firstAccount ? extractAccountObjectId(firstAccount) : null;
+
+      return {
+        checked: true,
+        mismatch: true,
+        cached_user: cachedUser,
+        cached_object_id: cachedOid,
+        expected_object_id: expectedOid,
+        reason,
+        quarantined_path: quarantinedPath ?? undefined,
+      };
+    }
+
+    case 'multi_match': {
+      const reason = `TOKEN_CACHE_CORRUPTED: ${matchResult.reason}`;
+      log.error('Multiple accounts match expected OID — cache quarantined', {
+        slug,
+        expected_object_id: expectedOid,
+        match_count: accounts.length,
+      });
+
+      let quarantinedPath: string | null = null;
+      try {
+        quarantinedPath = await quarantineTokenCache(reason);
+      } catch {
+        quarantinedPath = null;
+      }
+
+      lastIdentityMismatchError = reason;
+      lastKnownAccount = null;
+      msal = null;
+      graph = null;
+      resolvedKey = undefined;
+
+      return {
+        checked: true,
+        mismatch: true,
+        cached_user: null,
+        cached_object_id: null,
+        expected_object_id: expectedOid,
+        reason,
+        quarantined_path: quarantinedPath ?? undefined,
+      };
+    }
   }
-
-  const account = accounts[0];
-  const cachedUser = account?.username ?? null;
-  const cachedOid = account ? extractAccountObjectId(account) : null;
-
-  if (cachedOid && cachedOid === expectedOid) {
-    log.info('Identity verified', { slug, user: cachedUser, object_id: cachedOid });
-    return {
-      checked: true,
-      mismatch: false,
-      cached_user: cachedUser,
-      cached_object_id: cachedOid,
-      expected_object_id: expectedOid,
-    };
-  }
-
-  // ── MISMATCH — quarantine the cache ─────────────────────────────────────
-  const reason = cachedOid
-    ? `TOKEN_IDENTITY_MISMATCH expected=${expectedOid} actual=${cachedOid} user=${cachedUser}`
-    : `TOKEN_IDENTITY_UNKNOWN expected=${expectedOid} user=${cachedUser}`;
-  log.warn('TOKEN_IDENTITY_MISMATCH', {
-    slug,
-    expected_object_id: expectedOid,
-    actual_object_id: cachedOid,
-    user: cachedUser,
-  });
-
-  let quarantinedPath: string | null = null;
-  try {
-    quarantinedPath = await quarantineTokenCache(reason);
-  } catch {
-    quarantinedPath = null;
-  }
-
-  // Clear all in-memory auth state — force fresh login
-  lastIdentityMismatchError = reason;
-  lastKnownAccount = null;
-  msal = null;
-  graph = null;
-  resolvedKey = undefined;
-
-  return {
-    checked: true,
-    mismatch: true,
-    cached_user: cachedUser,
-    cached_object_id: cachedOid,
-    expected_object_id: expectedOid,
-    reason,
-    quarantined_path: quarantinedPath ?? undefined,
-  };
 }
 
 // ── Auth diagnostics ────────────────────────────────────────────────────────
@@ -653,6 +775,7 @@ export interface AuthStatusResult {
   expected_object_id: string | null;
   actual_object_id: string | null;
   identity_match: boolean | null;
+  identity_binding_status: 'valid' | 'invalid' | 'missing';
   device_code_verification_uri?: string;
   device_code_user_code?: string;
   error?: string;
@@ -661,8 +784,19 @@ export interface AuthStatusResult {
 /**
  * Lightweight diagnostics for auth troubleshooting.
  * Does NOT throw — returns structured status even on failures.
+ * Catches CONFIG_ERROR internally and reports identity_binding_status: 'missing'.
  */
 export async function authStatus(): Promise<AuthStatusResult> {
+  // Determine expected OID without throwing
+  let resolvedExpectedOid: string | null = null;
+  let oidConfigMissing = false;
+  try {
+    resolvedExpectedOid = expectedObjectId();
+    if (!resolvedExpectedOid) oidConfigMissing = true;
+  } catch {
+    oidConfigMissing = true;
+  }
+
   const result: AuthStatusResult = {
     logged_in: false,
     user: null,
@@ -673,15 +807,21 @@ export async function authStatus(): Promise<AuthStatusResult> {
     account_count: 0,
     graph_reachable: false,
     device_code_pending: pendingDeviceCodePromise !== null,
-    expected_object_id: expectedObjectId(),
+    expected_object_id: resolvedExpectedOid,
     actual_object_id: null,
     identity_match: null,
+    identity_binding_status: oidConfigMissing ? 'missing' : 'invalid',
   };
 
   // Include device code info if a flow is in progress
   if (pendingDeviceCodeInfo) {
     result.device_code_verification_uri = pendingDeviceCodeInfo.verificationUri;
     result.device_code_user_code = pendingDeviceCodeInfo.userCode;
+  }
+
+  if (oidConfigMissing) {
+    result.error = 'CONFIG_ERROR: EXPECTED_AAD_OBJECT_ID is required';
+    return result;
   }
 
   // Check encryption key
@@ -716,40 +856,52 @@ export async function authStatus(): Promise<AuthStatusResult> {
     }
   }
 
-  // Check accounts
+  // Check accounts using OID-based matching
   try {
     const app = await getMsal();
     const accounts = await app.getTokenCache().getAllAccounts();
     result.account_count = accounts.length;
 
-    if (accounts.length === 1) {
-      const account = accounts[0];
-      result.user = account?.username ?? null;
-      result.actual_object_id = account ? extractAccountObjectId(account) : null;
-      if (result.expected_object_id) {
-        if (result.actual_object_id) {
-          result.identity_match = result.actual_object_id === result.expected_object_id;
-          if (!result.identity_match) {
-            result.error = `TOKEN_IDENTITY_MISMATCH: expected=${result.expected_object_id} actual=${result.actual_object_id}`;
-          }
-        } else {
-          result.identity_match = false;
-          result.error = `TOKEN_IDENTITY_UNKNOWN: expected=${result.expected_object_id}`;
-        }
-      } else {
-        result.identity_match = null;
-      }
+    if (accounts.length > 0 && resolvedExpectedOid) {
+      const matchResult = findMatchingAccount(accounts, resolvedExpectedOid);
 
-      if (result.identity_match === false) {
-        result.logged_in = false;
-      } else {
-        result.logged_in = true;
+      switch (matchResult.kind) {
+        case 'matched': {
+          const account = matchResult.account;
+          result.user = account.username ?? null;
+          result.actual_object_id = extractAccountObjectId(account);
+          result.identity_match = true;
+          result.identity_binding_status = 'valid';
+          result.logged_in = true;
+          break;
+        }
+        case 'no_match': {
+          const firstAccount = accounts[0];
+          result.user = firstAccount?.username ?? null;
+          result.actual_object_id = firstAccount ? extractAccountObjectId(firstAccount) : null;
+          result.identity_match = false;
+          result.identity_binding_status = 'invalid';
+          result.error = `AUTH_MISMATCH: ${matchResult.reason}`;
+          break;
+        }
+        case 'multi_match': {
+          result.identity_match = false;
+          result.identity_binding_status = 'invalid';
+          result.error = `TOKEN_CACHE_CORRUPTED: ${matchResult.reason}`;
+          break;
+        }
       }
-    } else if (accounts.length > 1) {
-      result.error = 'MULTIPLE_ACCOUNTS_IN_CACHE: this gateway is designed for one user only. Run --logout and authenticate again.';
+    } else if (accounts.length === 0) {
+      result.identity_binding_status = resolvedExpectedOid ? 'valid' : 'missing';
     }
   } catch (err) {
-    result.error = err instanceof Error ? err.message : String(err);
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.startsWith('CONFIG_ERROR')) {
+      result.identity_binding_status = 'missing';
+      result.error = msg;
+    } else {
+      result.error = msg;
+    }
   }
 
   // Check Graph reachability (only if logged in)

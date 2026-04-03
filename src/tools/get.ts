@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { isLoggedIn, getGraph, getAccessToken } from '../auth/index.js';
-import { ok, includeFull, normalizeTop, compactText, escapeODataString } from '../utils/helpers.js';
+import { ok, fail, includeFull, normalizeTop, compactText, escapeODataString } from '../utils/helpers.js';
 import { loadConfig } from '../config/index.js';
 import { graphCache } from '../utils/cache.js';
 import { pickMail } from '../graph/mail.js';
@@ -11,8 +11,8 @@ import type { ToolSpec } from '../utils/types.js';
 /** Cache TTL for Graph API read results (30 s). */
 const CACHE_TTL_MS = 30_000;
 
-/** Max file download size for get_file_content (10 MB). */
-const MAX_DOWNLOAD_BYTES = 10 * 1024 * 1024;
+/** Max file size for in-memory buffering (10 MB). */
+const INLINE_MAX_BYTES = 10 * 1024 * 1024;
 
 /** MIME prefixes considered text-safe for inline return. */
 const TEXT_MIME_PREFIXES = ['text/', 'application/json', 'application/xml', 'application/javascript'];
@@ -129,7 +129,7 @@ export const getTools: ToolSpec[] = [
     name: 'get_file_metadata',
     description:
       'Get metadata for a OneDrive/SharePoint file by drive_id and item_id (both returned by find). ' +
-      'Returns file name, path, size, modified date, web URL, and creator info.',
+      'Returns file name, path, size, modified date, web URL, download URL, and creator info.',
     schema: z
       .object({
         drive_id: z.string().min(1),
@@ -156,13 +156,17 @@ export const getTools: ToolSpec[] = [
   {
     name: 'get_file_content',
     description:
-      'Download and return the content of a OneDrive/SharePoint file. ' +
-      'Text files (text/*, JSON, XML) are returned inline as text with optional truncation. ' +
-      'Binary files are returned as base64. Max file size: 10 MB.',
+      'Access file content from OneDrive/SharePoint. ' +
+      'Three modes: ' +
+      'metadata (default) — returns file info + pre-authenticated download_url (valid ~1 hour), no download; ' +
+      'inline — downloads and returns text content inline (text files <=10 MB only); ' +
+      'binary — downloads and returns base64-encoded content (files <=10 MB only). ' +
+      'Prefer metadata mode and let the client fetch via download_url to avoid buffering large files.',
     schema: z
       .object({
         drive_id: z.string().min(1),
         item_id: z.string().min(1),
+        mode: z.enum(['metadata', 'inline', 'binary']).default('metadata'),
         max_chars: z.number().int().positive().max(50000).optional(),
       })
       .strict(),
@@ -171,22 +175,61 @@ export const getTools: ToolSpec[] = [
 
       const driveId = encodeURIComponent(String(params.drive_id));
       const itemId = encodeURIComponent(String(params.item_id));
+      const mode = params.mode ?? 'metadata';
 
-      // Step 1: Get metadata to check size and content type
-      const meta = (await getGraph().api(`/drives/${driveId}/items/${itemId}`).select('id,name,size,file').get()) as Record<
+      // Step 1: Get metadata (includes @microsoft.graph.downloadUrl)
+      const meta = (await getGraph().api(`/drives/${driveId}/items/${itemId}`).select('id,name,size,file,webUrl').get()) as Record<
         string,
         unknown
       >;
 
       const fileSize = Number(meta.size || 0);
       const fileName = String(meta.name || 'unknown');
-      const mimeType = String((meta.file as Record<string, unknown> | undefined)?.mimeType || 'application/octet-stream');
+      const fileMeta = meta.file as Record<string, unknown> | undefined;
+      const mimeType = String(fileMeta?.mimeType || 'application/octet-stream');
+      const downloadUrl = (meta['@microsoft.graph.downloadUrl'] as string) || null;
+      const webUrl = (meta.webUrl as string) || null;
 
-      if (fileSize > MAX_DOWNLOAD_BYTES) {
-        throw new Error(`VALIDATION_ERROR: file '${fileName}' is ${fileSize} bytes, exceeds ${MAX_DOWNLOAD_BYTES} byte limit`);
+      // ── metadata mode: return file info + download URL, no download ──
+      if (mode === 'metadata') {
+        return ok(`File metadata: ${fileName}`, {
+          name: fileName,
+          mime_type: mimeType,
+          size_bytes: fileSize,
+          download_url: downloadUrl,
+          web_url: webUrl,
+        });
       }
 
-      // Step 2: Download the file content
+      // ── inline / binary mode: download the file content ──
+
+      // Size guard: never buffer files >10 MB
+      if (fileSize > INLINE_MAX_BYTES) {
+        return fail(
+          'FILE_TOO_LARGE',
+          `File '${fileName}' is ${fileSize} bytes (limit: ${INLINE_MAX_BYTES}). Use the download_url instead.`,
+          {
+            name: fileName,
+            size_bytes: fileSize,
+            limit_bytes: INLINE_MAX_BYTES,
+            download_url: downloadUrl,
+            web_url: webUrl,
+          },
+        );
+      }
+
+      // For inline mode, reject non-text files
+      if (mode === 'inline' && !isTextMime(mimeType)) {
+        return fail('FILE_TOO_LARGE', `File '${fileName}' has non-text MIME type '${mimeType}'. Use binary mode or the download_url.`, {
+          name: fileName,
+          mime_type: mimeType,
+          size_bytes: fileSize,
+          download_url: downloadUrl,
+          web_url: webUrl,
+        });
+      }
+
+      // Download the file content
       const token = await getAccessToken();
       const endpoint = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/content`;
       const response = await fetch(endpoint, { headers: { Authorization: `Bearer ${token}` }, keepalive: true });
@@ -196,8 +239,7 @@ export const getTools: ToolSpec[] = [
 
       const buffer = Buffer.from(await response.arrayBuffer());
 
-      // Step 3: Return text or base64 based on content type
-      if (isTextMime(mimeType)) {
+      if (mode === 'inline') {
         const maxChars = Number.parseInt(String(params.max_chars || loadConfig().output.defaultMaxChars), 10);
         const raw = buffer.toString('utf-8');
         const compact = compactText(raw, maxChars);
@@ -211,7 +253,7 @@ export const getTools: ToolSpec[] = [
         });
       }
 
-      // Binary file: return base64
+      // binary mode
       return ok(`File content: ${fileName} (binary)`, {
         name: fileName,
         mime_type: mimeType,

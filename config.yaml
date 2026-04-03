@@ -13,6 +13,10 @@ scopes:
   - 'Files.Read.All'
   - 'Sites.Read.All'
   - 'Sites.Selected'
+  - 'Chat.Read'
+  - 'ChatMessage.Send'
+  - 'OnlineMeetingTranscript.Read.All'
+  - 'OnlineMeetings.Read'
 
 guardrails:
   email:

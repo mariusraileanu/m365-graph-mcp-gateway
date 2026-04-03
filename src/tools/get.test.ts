@@ -140,7 +140,15 @@ mock.module('../graph/files.js', {
   namedExports: {
     pickFile: (item: Record<string, unknown>, includeFull: boolean) => {
       pickFileCalls.push({ item, includeFull });
-      return { id: item.id, name: item.name, drive_id: 'drv-1', size: item.size, web_url: item.webUrl, include_full: includeFull };
+      return {
+        id: item.id,
+        name: item.name,
+        drive_id: 'drv-1',
+        size: item.size,
+        web_url: item.webUrl,
+        download_url: (item['@microsoft.graph.downloadUrl'] as string) || null,
+        include_full: includeFull,
+      };
     },
     searchFiles: async () => [],
   },
@@ -391,16 +399,80 @@ describe('get_file_metadata', () => {
   });
 });
 
-// ── get_file_content tests ───────────────────────────────────────────────────
+// ── get_file_content — mode=metadata (default) ──────────────────────────────
 
-describe('get_file_content — text files', () => {
+describe('get_file_content — metadata mode (default)', () => {
+  beforeEach(() => resetTracking());
+
+  it('returns metadata with download_url without downloading', async () => {
+    graphGetResponse = {
+      id: 'item-1',
+      name: 'readme.txt',
+      size: 100,
+      file: { mimeType: 'text/plain' },
+      webUrl: 'https://example.sharepoint.com/readme.txt',
+      '@microsoft.graph.downloadUrl': 'https://download.example.com/readme.txt?token=abc',
+    };
+
+    const result = await callGetFileContent({ drive_id: 'drv-1', item_id: 'item-1' });
+
+    assert.ok(!('isError' in result));
+    const structured = result.structuredContent as Record<string, unknown>;
+    assert.equal(structured.name, 'readme.txt');
+    assert.equal(structured.mime_type, 'text/plain');
+    assert.equal(structured.size_bytes, 100);
+    assert.equal(structured.download_url, 'https://download.example.com/readme.txt?token=abc');
+    assert.equal(structured.web_url, 'https://example.sharepoint.com/readme.txt');
+    // Should NOT have downloaded the file
+    assert.equal(fetchCalls.length, 0, 'metadata mode should not download');
+  });
+
+  it('returns null download_url when not present in Graph response', async () => {
+    graphGetResponse = {
+      id: 'item-1',
+      name: 'readme.txt',
+      size: 100,
+      file: { mimeType: 'text/plain' },
+      webUrl: 'https://example.sharepoint.com/readme.txt',
+    };
+
+    const result = await callGetFileContent({ drive_id: 'drv-1', item_id: 'item-1' });
+
+    assert.ok(!('isError' in result));
+    const structured = result.structuredContent as Record<string, unknown>;
+    assert.equal(structured.download_url, null);
+  });
+
+  it('defaults to metadata mode when mode not specified', async () => {
+    graphGetResponse = {
+      id: 'item-1',
+      name: 'readme.txt',
+      size: 100,
+      file: { mimeType: 'text/plain' },
+    };
+
+    const result = await callGetFileContent({ drive_id: 'drv-1', item_id: 'item-1' });
+
+    assert.ok(!('isError' in result));
+    assert.equal(fetchCalls.length, 0, 'default mode should be metadata (no download)');
+  });
+
+  it('throws AUTH_REQUIRED when not logged in', async () => {
+    loggedIn = false;
+    await assert.rejects(() => callGetFileContent({ drive_id: 'drv-1', item_id: 'item-1' }), /AUTH_REQUIRED/);
+  });
+});
+
+// ── get_file_content — mode=inline ──────────────────────────────────────────
+
+describe('get_file_content — inline mode', () => {
   beforeEach(() => resetTracking());
 
   it('returns text content inline for text/plain files', async () => {
     graphGetResponse = { id: 'item-1', name: 'readme.txt', size: 100, file: { mimeType: 'text/plain' } };
     fetchResponse = { ok: true, status: 200, buffer: Buffer.from('Hello, world!'), contentType: 'text/plain' };
 
-    const result = await callGetFileContent({ drive_id: 'drv-1', item_id: 'item-1' });
+    const result = await callGetFileContent({ drive_id: 'drv-1', item_id: 'item-1', mode: 'inline' });
 
     assert.ok(!('isError' in result));
     const structured = result.structuredContent as Record<string, unknown>;
@@ -415,7 +487,7 @@ describe('get_file_content — text files', () => {
     graphGetResponse = { id: 'item-2', name: 'data.json', size: 50, file: { mimeType: 'application/json' } };
     fetchResponse = { ok: true, status: 200, buffer: Buffer.from('{"key":"value"}'), contentType: 'application/json' };
 
-    const result = await callGetFileContent({ drive_id: 'drv-1', item_id: 'item-2' });
+    const result = await callGetFileContent({ drive_id: 'drv-1', item_id: 'item-2', mode: 'inline' });
 
     assert.ok(!('isError' in result));
     const structured = result.structuredContent as Record<string, unknown>;
@@ -428,16 +500,36 @@ describe('get_file_content — text files', () => {
     graphGetResponse = { id: 'item-3', name: 'long.txt', size: 500, file: { mimeType: 'text/plain' } };
     fetchResponse = { ok: true, status: 200, buffer: Buffer.from(longText), contentType: 'text/plain' };
 
-    const result = await callGetFileContent({ drive_id: 'drv-1', item_id: 'item-3', max_chars: 200 });
+    const result = await callGetFileContent({ drive_id: 'drv-1', item_id: 'item-3', mode: 'inline', max_chars: 200 });
 
     assert.ok(!('isError' in result));
     const structured = result.structuredContent as Record<string, unknown>;
     assert.equal(structured.truncated, true);
     assert.ok(String(structured.content).length <= 200);
   });
+
+  it('returns FILE_TOO_LARGE for non-text MIME in inline mode', async () => {
+    graphGetResponse = {
+      id: 'item-4',
+      name: 'image.png',
+      size: 5000,
+      file: { mimeType: 'image/png' },
+      '@microsoft.graph.downloadUrl': 'https://download.example.com/image.png',
+    };
+
+    const result = await callGetFileContent({ drive_id: 'drv-1', item_id: 'item-4', mode: 'inline' });
+
+    assert.ok('isError' in result && result.isError);
+    const structured = result.structuredContent as Record<string, unknown>;
+    assert.equal(structured.error_code, 'FILE_TOO_LARGE');
+    assert.ok(structured.download_url, 'should include download_url in error response');
+    assert.equal(fetchCalls.length, 0, 'should not download binary file in inline mode');
+  });
 });
 
-describe('get_file_content — binary files', () => {
+// ── get_file_content — mode=binary ──────────────────────────────────────────
+
+describe('get_file_content — binary mode', () => {
   beforeEach(() => resetTracking());
 
   it('returns base64 for binary files', async () => {
@@ -445,7 +537,7 @@ describe('get_file_content — binary files', () => {
     graphGetResponse = { id: 'item-4', name: 'image.png', size: 4, file: { mimeType: 'image/png' } };
     fetchResponse = { ok: true, status: 200, buffer: binaryData, contentType: 'image/png' };
 
-    const result = await callGetFileContent({ drive_id: 'drv-1', item_id: 'item-4' });
+    const result = await callGetFileContent({ drive_id: 'drv-1', item_id: 'item-4', mode: 'binary' });
 
     assert.ok(!('isError' in result));
     const structured = result.structuredContent as Record<string, unknown>;
@@ -455,26 +547,73 @@ describe('get_file_content — binary files', () => {
     assert.equal(structured.content, binaryData.toString('base64'));
     assert.equal(structured.truncated, false);
   });
+
+  it('returns base64 for text files in binary mode', async () => {
+    graphGetResponse = { id: 'item-5', name: 'readme.txt', size: 11, file: { mimeType: 'text/plain' } };
+    fetchResponse = { ok: true, status: 200, buffer: Buffer.from('Hello World'), contentType: 'text/plain' };
+
+    const result = await callGetFileContent({ drive_id: 'drv-1', item_id: 'item-5', mode: 'binary' });
+
+    assert.ok(!('isError' in result));
+    const structured = result.structuredContent as Record<string, unknown>;
+    assert.equal(structured.encoding, 'base64');
+    assert.equal(structured.content, Buffer.from('Hello World').toString('base64'));
+  });
 });
+
+// ── get_file_content — error handling ────────────────────────────────────────
 
 describe('get_file_content — error handling', () => {
   beforeEach(() => resetTracking());
 
-  it('throws VALIDATION_ERROR when file exceeds size limit', async () => {
-    graphGetResponse = { id: 'item-big', name: 'huge.zip', size: 11 * 1024 * 1024, file: { mimeType: 'application/zip' } };
-    await assert.rejects(() => callGetFileContent({ drive_id: 'drv-1', item_id: 'item-big' }), /VALIDATION_ERROR.*exceeds/);
+  it('returns FILE_TOO_LARGE when file exceeds 10 MB in inline mode', async () => {
+    graphGetResponse = {
+      id: 'item-big',
+      name: 'huge.zip',
+      size: 11 * 1024 * 1024,
+      file: { mimeType: 'application/zip' },
+      '@microsoft.graph.downloadUrl': 'https://download.example.com/huge.zip',
+    };
+
+    const result = await callGetFileContent({ drive_id: 'drv-1', item_id: 'item-big', mode: 'binary' });
+
+    assert.ok('isError' in result && result.isError);
+    const structured = result.structuredContent as Record<string, unknown>;
+    assert.equal(structured.error_code, 'FILE_TOO_LARGE');
+    assert.ok(structured.download_url, 'should include download_url for client-side fetch');
+    assert.equal(fetchCalls.length, 0, 'should not download oversized file');
+  });
+
+  it('returns metadata normally for large files in metadata mode', async () => {
+    graphGetResponse = {
+      id: 'item-big',
+      name: 'huge.zip',
+      size: 500 * 1024 * 1024,
+      file: { mimeType: 'application/zip' },
+      webUrl: 'https://example.sharepoint.com/huge.zip',
+      '@microsoft.graph.downloadUrl': 'https://download.example.com/huge.zip',
+    };
+
+    const result = await callGetFileContent({ drive_id: 'drv-1', item_id: 'item-big' });
+
+    assert.ok(!('isError' in result), 'metadata mode should not error for large files');
+    const structured = result.structuredContent as Record<string, unknown>;
+    assert.equal(structured.name, 'huge.zip');
+    assert.equal(structured.size_bytes, 500 * 1024 * 1024);
+    assert.equal(structured.download_url, 'https://download.example.com/huge.zip');
+    assert.equal(fetchCalls.length, 0);
   });
 
   it('throws UPSTREAM_ERROR when download fails', async () => {
     graphGetResponse = { id: 'item-err', name: 'file.txt', size: 100, file: { mimeType: 'text/plain' } };
     fetchResponse = { ok: false, status: 404, buffer: Buffer.from(''), contentType: 'text/plain' };
 
-    await assert.rejects(() => callGetFileContent({ drive_id: 'drv-1', item_id: 'item-err' }), /UPSTREAM_ERROR.*404/);
+    await assert.rejects(() => callGetFileContent({ drive_id: 'drv-1', item_id: 'item-err', mode: 'inline' }), /UPSTREAM_ERROR.*404/);
   });
 
   it('throws AUTH_REQUIRED when not logged in', async () => {
     loggedIn = false;
-    await assert.rejects(() => callGetFileContent({ drive_id: 'drv-1', item_id: 'item-1' }), /AUTH_REQUIRED/);
+    await assert.rejects(() => callGetFileContent({ drive_id: 'drv-1', item_id: 'item-1', mode: 'inline' }), /AUTH_REQUIRED/);
   });
 });
 

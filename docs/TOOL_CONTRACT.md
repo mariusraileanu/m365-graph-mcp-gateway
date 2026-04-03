@@ -48,18 +48,48 @@ The `/mcp` endpoint supports optional API key authentication via the
 
 ### Identity Binding
 
-The gateway supports **identity pinning** to ensure the cached Microsoft identity
-matches the expected user for a given deployment. This prevents cross-user token
-reuse when multiple containers share infrastructure.
+The gateway enforces **strict identity pinning** to ensure the cached Microsoft
+identity matches the expected user for a given deployment. This prevents
+cross-user token reuse when multiple containers share NFS-backed storage.
 
-**Entra object ID binding** (`EXPECTED_AAD_OBJECT_ID`):
+**`EXPECTED_AAD_OBJECT_ID` is required** — the gateway refuses to operate without
+it. Login, token acquisition, and identity verification all fail with
+`CONFIG_ERROR` if this value is not set.
 
-- Validated on every `resolveAccount()` call (not just startup)
-- Compares the AAD object ID from the cached account's `idTokenClaims.oid` or
-  `localAccountId` against the expected UUID
-- If mismatch: quarantines the cache and resets auth state
-- The `auth` tool's `status` action reports `expected_object_id`,
-  `actual_object_id`, and `identity_match` fields
+**OID-based account matching**:
+
+- On every `resolveAccount()` call, the gateway scans all cached MSAL accounts
+  and selects the one whose `idTokenClaims.oid` or `localAccountId` matches
+  `EXPECTED_AAD_OBJECT_ID`. It never picks the "first" account.
+- If no account matches: returns null (auth required)
+- If exactly one matches: uses that account
+- If multiple match (corrupted cache): quarantines the cache and throws
+  `TOKEN_CACHE_CORRUPTED`
+- If a single account exists but its OID doesn't match: quarantines the cache
+  and throws `AUTH_MISMATCH`
+
+**Startup verification** (`verifyIdentityBinding()`):
+
+- Runs at container startup before accepting requests
+- Uses the same OID-based matching logic
+- Writes a `token-cache.meta.json` sidecar file on success (records OID,
+  timestamp, and user principal name)
+- On mismatch or corruption: quarantines the cache by renaming it
+
+**The `auth` tool's `status` action reports**:
+
+- `expected_object_id` — from `EXPECTED_AAD_OBJECT_ID` (null if not configured)
+- `actual_object_id` — from cached account (null if no account)
+- `identity_match` — boolean comparison (null if OID not configured)
+- `identity_binding_status` — one of:
+  - `'valid'` — OID is configured and matches the cached account
+  - `'invalid'` — OID is configured but does not match (or cache corrupted)
+  - `'missing'` — `EXPECTED_AAD_OBJECT_ID` is not set (gateway non-functional)
+
+**`USER_SLUG` is required** — controls per-user storage path isolation. Without
+it, the gateway refuses to resolve any storage path (token cache, audit log).
+Format: lowercase alphanumeric + hyphens, 2–31 chars, starting with a letter
+(e.g. `jdoe`, `dev-local`). Set it in `.env` for local development.
 
 ```bash
 # With API key configured
@@ -230,18 +260,25 @@ Every `tools/call` response follows this contract:
 
 Errors use a `CODE: message` pattern:
 
-| Code                         | Meaning                                                        |
-| ---------------------------- | -------------------------------------------------------------- |
-| `AUTH_REQUIRED`              | Not logged in — call `auth` first                              |
-| `AUTH_EXPIRED`               | Token expired — re-authenticate via `auth`                     |
-| `MULTIPLE_ACCOUNTS_IN_CACHE` | Token cache contains >1 account — logout and re-login          |
-| `CACHE_DECRYPTION_FAILED`    | Token cache exists but cannot be decrypted (wrong key/corrupt) |
-| `TOKEN_IDENTITY_MISMATCH`    | Cached identity does not match expected Entra object ID |
-| `VALIDATION_ERROR`           | Missing or invalid parameters                                  |
-| `FORBIDDEN`                  | Recipient domain not in allowlist                              |
-| `NOT_FOUND`                  | Resource not found                                             |
-| `UPSTREAM_ERROR`             | Microsoft Graph API error                                      |
-| `INTERNAL_ERROR`             | Unexpected server error                                        |
+| Code                         | Meaning                                                                    |
+| ---------------------------- | -------------------------------------------------------------------------- |
+| `AUTH_REQUIRED`              | Not logged in — call `auth` first                                          |
+| `AUTH_EXPIRED`               | Token expired — re-authenticate via `auth`                                 |
+| `AUTH_MISMATCH`              | Cached identity OID does not match `EXPECTED_AAD_OBJECT_ID`                |
+| `CONFIG_ERROR`               | Required config missing (e.g. `EXPECTED_AAD_OBJECT_ID` not set)            |
+| `TOKEN_CACHE_CORRUPTED`      | Token cache in invalid state (e.g. multiple OID matches)                   |
+| `MULTIPLE_ACCOUNTS_IN_CACHE` | Token cache contains >1 account — logout and re-login                      |
+| `CACHE_DECRYPTION_FAILED`    | Token cache exists but cannot be decrypted (wrong key/corrupt)             |
+| `TOKEN_IDENTITY_MISMATCH`    | Cached identity does not match expected Entra object ID                    |
+| `FILE_TOO_LARGE`             | File exceeds 10 MB inline limit — use `download_url` instead               |
+| `VALIDATION_ERROR`           | Missing or invalid parameters                                              |
+| `FORBIDDEN`                  | Recipient domain not in allowlist                                          |
+| `NOT_FOUND`                  | Resource not found                                                         |
+| `UPSTREAM_ERROR`             | Microsoft Graph API error                                                  |
+| `INTERNAL_ERROR`             | Unexpected server error                                                    |
+| `MEETING_NOT_RESOLVABLE`     | joinWebUrl filter returned 0 meetings — expired or no calendar association |
+| `MISSING_JOIN_WEB_URL`       | Chat has no onlineMeetingInfo.joinWebUrl                                   |
+| `TRANSCRIPT_NOT_AVAILABLE`   | Transcription not enabled, not ready, meeting expired, or no permission    |
 
 ---
 
@@ -254,6 +291,7 @@ show the user what will happen before committing.
 - `compose_email` with `mode: "send"`, `"reply"`, or `"reply_all"`
 - `schedule_meeting`
 - `respond_to_meeting` (accept, decline, tentativelyAccept, cancel)
+- `send_chat_message`
 
 **Pattern**: first call without `confirm` to get a preview, then re-call with
 `confirm: true` after user approval.
@@ -279,7 +317,7 @@ configurable domain allowlist before any email is sent or meeting is scheduled.
 
 ---
 
-## Tools Reference (11 tools)
+## Tools Reference (20 tools)
 
 ### 1. `auth`
 
@@ -357,29 +395,31 @@ display MCP logging notifications will surface it in real time.
   "device_code_pending": false,
   "expected_object_id": "11111111-1111-4111-8111-111111111111",
   "actual_object_id": "11111111-1111-4111-8111-111111111111",
-  "identity_match": true
+  "identity_match": true,
+  "identity_binding_status": "valid"
 }
 ```
 
 Returns structured diagnostics for troubleshooting auth issues. Fields:
 
-| Field                          | Type    | Description                                                                                   |
-| ------------------------------ | ------- | --------------------------------------------------------------------------------------------- |
-| `logged_in`                    | boolean | Whether a valid account is resolved from the cache                                            |
+| Field                          | Type    | Description                                                                                  |
+| ------------------------------ | ------- | -------------------------------------------------------------------------------------------- |
+| `logged_in`                    | boolean | Whether a valid account is resolved from the cache                                           |
 | `user`                         | string  | User principal name of the logged-in user (null if not logged in)                            |
-| `cache_file_exists`            | boolean | Whether the token cache file exists on disk                                                   |
-| `cache_encrypted`              | boolean | Whether the cache file uses AES-256-GCM encryption                                            |
-| `cache_decryptable`            | boolean | Whether the cache can be successfully decrypted/parsed                                        |
-| `encryption_key_configured`    | boolean | Whether `GRAPH_TOKEN_CACHE_ENCRYPTION_KEY` env var is set                                     |
-| `account_count`                | number  | Number of accounts in the cache (should be 0 or 1)                                            |
-| `graph_reachable`              | boolean | Whether a test call to Microsoft Graph `/me` succeeds                                         |
-| `device_code_pending`          | boolean | Whether a device code login flow is currently in progress                                     |
-| `expected_object_id`           | string  | Expected Entra object ID from `EXPECTED_AAD_OBJECT_ID` (null if not configured)               |
-| `actual_object_id`             | string  | Entra object ID from the cached account (null if no cached account)                           |
-| `identity_match`               | boolean | Whether the Entra object ID matches (null if not configured)                                  |
-| `device_code_verification_uri` | string  | Verification URI (only present when `device_code_pending` is true)                            |
-| `device_code_user_code`        | string  | User code to enter (only present when `device_code_pending` is true)                          |
-| `error`                        | string  | Error message if any check failed (only present on errors)                                    |
+| `cache_file_exists`            | boolean | Whether the token cache file exists on disk                                                  |
+| `cache_encrypted`              | boolean | Whether the cache file uses AES-256-GCM encryption                                           |
+| `cache_decryptable`            | boolean | Whether the cache can be successfully decrypted/parsed                                       |
+| `encryption_key_configured`    | boolean | Whether `GRAPH_TOKEN_CACHE_ENCRYPTION_KEY` env var is set                                    |
+| `account_count`                | number  | Number of accounts in the cache (should be 0 or 1)                                           |
+| `graph_reachable`              | boolean | Whether a test call to Microsoft Graph `/me` succeeds                                        |
+| `device_code_pending`          | boolean | Whether a device code login flow is currently in progress                                    |
+| `expected_object_id`           | string  | Expected Entra object ID from `EXPECTED_AAD_OBJECT_ID` (null if not configured)              |
+| `actual_object_id`             | string  | Entra object ID from the cached account (null if no cached account)                          |
+| `identity_match`               | boolean | Whether the Entra object ID matches (null if not configured)                                 |
+| `identity_binding_status`      | string  | Overall binding state: `"valid"`, `"invalid"`, or `"missing"` (see Identity Binding section) |
+| `device_code_verification_uri` | string  | Verification URI (only present when `device_code_pending` is true)                           |
+| `device_code_user_code`        | string  | User code to enter (only present when `device_code_pending` is true)                         |
+| `error`                        | string  | Error message if any check failed (only present on errors)                                   |
 
 ---
 
@@ -757,27 +797,58 @@ date, web URL, and creator info.
 
 ### 7. `get_file_content`
 
-Download and return the content of a OneDrive/SharePoint file. Text files
-(`text/*`, `application/json`, `application/xml`, `application/javascript`) are
-returned inline as UTF-8 text with optional truncation. Binary files are returned
-as base64-encoded strings. Maximum file size: 10 MB.
+Access file content from OneDrive/SharePoint. Supports three modes to avoid
+unnecessary large downloads.
 
-| Parameter   | Type    | Required | Description                                                                    |
-| ----------- | ------- | -------- | ------------------------------------------------------------------------------ |
-| `drive_id`  | string  | yes      | Drive ID from `find` file results                                              |
-| `item_id`   | string  | yes      | Item ID from `find` file results                                               |
-| `max_chars` | integer | no       | Max chars for text content (1-50000, default from config). Ignored for binary. |
+| Parameter   | Type    | Required | Description                                                                |
+| ----------- | ------- | -------- | -------------------------------------------------------------------------- |
+| `drive_id`  | string  | yes      | Drive ID from `find` file results                                          |
+| `item_id`   | string  | yes      | Item ID from `find` file results                                           |
+| `mode`      | enum    | no       | `"metadata"` (default), `"inline"`, `"binary"` — see below                 |
+| `max_chars` | integer | no       | Max chars for text content in `inline` mode (1-50000, default from config) |
 
-**Example** — read a text file:
+#### Modes
+
+| Mode       | Behavior                                                                               |
+| ---------- | -------------------------------------------------------------------------------------- |
+| `metadata` | Returns file info + pre-authenticated `download_url` (valid ~1 hour). **No download.** |
+| `inline`   | Downloads and returns text content as UTF-8. Text MIME types only, ≤10 MB.             |
+| `binary`   | Downloads and returns base64-encoded content. Any MIME type, ≤10 MB.                   |
+
+**Default is `metadata`** — always prefer this mode and let the client fetch via
+`download_url` to avoid buffering large files through the gateway.
+
+**Example** — get download URL (metadata mode, default):
 
 ```json
 {
   "name": "get_file_content",
-  "arguments": { "drive_id": "b!abc...", "item_id": "01XYZ...", "max_chars": 10000 }
+  "arguments": { "drive_id": "b!abc...", "item_id": "01XYZ..." }
 }
 ```
 
-**Response** (text):
+**Response** (metadata):
+
+```json
+{
+  "name": "Budget_Q4_2026.xlsx",
+  "mime_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "size_bytes": 45321,
+  "download_url": "https://contoso.sharepoint.com/_layouts/15/download.aspx?UniqueId=...",
+  "web_url": "https://contoso.sharepoint.com/sites/Finance/Shared Documents/Budget_Q4_2026.xlsx"
+}
+```
+
+**Example** — read text file inline:
+
+```json
+{
+  "name": "get_file_content",
+  "arguments": { "drive_id": "b!abc...", "item_id": "01XYZ...", "mode": "inline", "max_chars": 10000 }
+}
+```
+
+**Response** (inline):
 
 ```json
 {
@@ -787,6 +858,15 @@ as base64-encoded strings. Maximum file size: 10 MB.
   "encoding": "text",
   "content": "# Sprint Planning Notes\n\n## Action Items\n- Review backlog...",
   "truncated": false
+}
+```
+
+**Example** — download binary file:
+
+```json
+{
+  "name": "get_file_content",
+  "arguments": { "drive_id": "b!abc...", "item_id": "01XYZ...", "mode": "binary" }
 }
 ```
 
@@ -803,14 +883,49 @@ as base64-encoded strings. Maximum file size: 10 MB.
 }
 ```
 
-**Error** — file too large:
+**Error** — file too large (inline or binary mode, >10 MB):
 
 ```json
 {
   "isError": true,
-  "content": [{ "type": "text", "text": "VALIDATION_ERROR: file 'database.bak' is 52428800 bytes, exceeds 10485760 byte limit" }]
+  "content": [
+    { "type": "text", "text": "FILE_TOO_LARGE: File 'database.bak' is 52428800 bytes (limit: 10485760). Use the download_url instead." }
+  ],
+  "structuredContent": {
+    "name": "database.bak",
+    "size_bytes": 52428800,
+    "limit_bytes": 10485760,
+    "download_url": "https://contoso.sharepoint.com/_layouts/15/download.aspx?UniqueId=...",
+    "web_url": "https://contoso.sharepoint.com/sites/..."
+  }
 }
 ```
+
+**Error** — non-text MIME in inline mode:
+
+```json
+{
+  "isError": true,
+  "content": [
+    {
+      "type": "text",
+      "text": "FILE_TOO_LARGE: File 'report.pdf' has non-text MIME type 'application/pdf'. Use binary mode or the download_url."
+    }
+  ],
+  "structuredContent": {
+    "name": "report.pdf",
+    "mime_type": "application/pdf",
+    "size_bytes": 1048576,
+    "download_url": "https://contoso.sharepoint.com/_layouts/15/download.aspx?UniqueId=...",
+    "web_url": "https://contoso.sharepoint.com/sites/..."
+  }
+}
+```
+
+> **Note**: Files over 10 MB are never buffered in-memory. The `metadata` mode
+> works for files of any size since it only fetches Graph metadata. The
+> `download_url` is a pre-authenticated SharePoint URL valid for approximately
+> 1 hour — clients can fetch it directly without going through the gateway.
 
 ---
 
@@ -1004,7 +1119,447 @@ List recent audit log entries. Records all write actions and blocked attempts.
 
 ---
 
-## Common Workflows
+### 12. `list_chats`
+
+List Teams chats for the current user. Returns oneOnOne, group, and meeting
+chats. Meeting chats include `joinWebUrl` for transcript workflows.
+
+| Parameter        | Type    | Required | Description                                                                |
+| ---------------- | ------- | -------- | -------------------------------------------------------------------------- |
+| `top`            | integer | no       | Max results (1-50, default 10)                                             |
+| `chat_type`      | enum    | no       | Filter: `"oneOnOne"`, `"group"`, `"meeting"`                               |
+| `expand_members` | boolean | no       | `true` to include member list                                              |
+| `include_full`   | boolean | no       | `true` for expanded fields (tenant, web URL, online meeting info, members) |
+
+**Required scopes**: `Chat.Read` (delegated)
+
+**Example** — list meeting chats:
+
+```json
+{
+  "name": "list_chats",
+  "arguments": { "chat_type": "meeting", "top": 20 }
+}
+```
+
+**Response** (minimal):
+
+```json
+{
+  "count": 2,
+  "chats": [
+    {
+      "id": "19:meeting_abc@thread.v2",
+      "topic": "Sprint Review",
+      "chat_type": "meeting",
+      "created_at": "2026-01-15T09:00:00Z",
+      "last_updated_at": "2026-01-15T10:30:00Z",
+      "join_web_url": "https://teams.microsoft.com/l/meetup-join/abc",
+      "last_message_preview": "Thanks everyone",
+      "last_message_at": "2026-01-15T10:25:00Z"
+    },
+    {
+      "id": "19:meeting_xyz@thread.v2",
+      "topic": "1:1 with Manager",
+      "chat_type": "meeting",
+      "created_at": "2026-01-14T14:00:00Z",
+      "last_updated_at": "2026-01-14T15:00:00Z",
+      "join_web_url": "https://teams.microsoft.com/l/meetup-join/xyz"
+    }
+  ]
+}
+```
+
+---
+
+### 13. `get_chat`
+
+Get a specific Teams chat by ID. Returns full chat details including members.
+For meeting chats, includes `onlineMeetingInfo` with `joinWebUrl` needed for
+`resolve_meeting`.
+
+| Parameter      | Type    | Required | Description                                                         |
+| -------------- | ------- | -------- | ------------------------------------------------------------------- |
+| `chat_id`      | string  | yes      | Chat ID                                                             |
+| `include_full` | boolean | no       | `true` for expanded fields (tenant, web URL, meeting info, members) |
+
+**Required scopes**: `Chat.Read` (delegated)
+
+**Example**:
+
+```json
+{ "name": "get_chat", "arguments": { "chat_id": "19:meeting_abc@thread.v2", "include_full": true } }
+```
+
+**Response** (full):
+
+```json
+{
+  "id": "19:meeting_abc@thread.v2",
+  "topic": "Sprint Review",
+  "chat_type": "meeting",
+  "created_at": "2026-01-15T09:00:00Z",
+  "last_updated_at": "2026-01-15T10:30:00Z",
+  "join_web_url": "https://teams.microsoft.com/l/meetup-join/abc",
+  "tenant_id": "92e3f433-...",
+  "web_url": "https://teams.microsoft.com/l/chat/...",
+  "online_meeting_info": {
+    "joinWebUrl": "https://teams.microsoft.com/l/meetup-join/abc",
+    "calendarEventId": "AAMk..."
+  },
+  "members": [
+    { "displayName": "Jane Doe", "userId": "user-uuid-1" },
+    { "displayName": "Bob Smith", "userId": "user-uuid-2" }
+  ]
+}
+```
+
+---
+
+### 14. `list_chat_messages`
+
+List messages in a Teams chat. Returns messages with sender, timestamp, and body
+text. HTML bodies are stripped to plain text and truncated.
+
+| Parameter      | Type    | Required | Description                                                   |
+| -------------- | ------- | -------- | ------------------------------------------------------------- |
+| `chat_id`      | string  | yes      | Chat ID                                                       |
+| `top`          | integer | no       | Max results (1-50, default 10)                                |
+| `include_full` | boolean | no       | `true` for expanded fields (importance, web URL, attachments) |
+
+**Required scopes**: `Chat.Read` (delegated)
+
+**Example**:
+
+```json
+{ "name": "list_chat_messages", "arguments": { "chat_id": "19:meeting_abc@thread.v2", "top": 20 } }
+```
+
+**Response** (minimal):
+
+```json
+{
+  "count": 3,
+  "messages": [
+    {
+      "id": "1234567890",
+      "message_type": "message",
+      "from_name": "Jane Doe",
+      "from_id": "user-uuid-1",
+      "created_at": "2026-01-15T09:05:00Z",
+      "body_text": "Let's start with the backlog review.",
+      "body_truncated": false
+    },
+    {
+      "id": "1234567891",
+      "message_type": "message",
+      "from_name": "Bob Smith",
+      "from_id": "user-uuid-2",
+      "created_at": "2026-01-15T09:10:00Z",
+      "body_text": "I've updated the sprint board.",
+      "body_truncated": false
+    }
+  ]
+}
+```
+
+---
+
+### 15. `get_chat_message`
+
+Get a specific message from a Teams chat by chat ID and message ID.
+
+| Parameter      | Type    | Required | Description                                                   |
+| -------------- | ------- | -------- | ------------------------------------------------------------- |
+| `chat_id`      | string  | yes      | Chat ID                                                       |
+| `message_id`   | string  | yes      | Message ID                                                    |
+| `include_full` | boolean | no       | `true` for expanded fields (importance, web URL, attachments) |
+
+**Required scopes**: `Chat.Read` (delegated)
+
+**Example**:
+
+```json
+{ "name": "get_chat_message", "arguments": { "chat_id": "19:abc@thread.v2", "message_id": "1234567890" } }
+```
+
+**Response** (minimal):
+
+```json
+{
+  "id": "1234567890",
+  "message_type": "message",
+  "from_name": "Jane Doe",
+  "from_id": "user-uuid-1",
+  "created_at": "2026-01-15T09:05:00Z",
+  "body_text": "Let's start with the backlog review.",
+  "body_truncated": false
+}
+```
+
+---
+
+### 16. `send_chat_message`
+
+Send a message to an existing Teams chat. Write operation — requires
+`confirm=true`. Cannot create new chats.
+
+| Parameter | Type           | Required | Description                                    |
+| --------- | -------------- | -------- | ---------------------------------------------- |
+| `chat_id` | string         | yes      | Chat ID (existing chat only)                   |
+| `content` | string         | yes      | Message content (plain text)                   |
+| `confirm` | literal `true` | no       | `true` to send. Without it, returns a preview. |
+
+**Required scopes**: `ChatMessage.Send` (delegated)
+
+**Example** — preview:
+
+```json
+{ "name": "send_chat_message", "arguments": { "chat_id": "19:abc@thread.v2", "content": "Meeting notes attached." } }
+```
+
+**Response** (preview):
+
+```json
+{
+  "requires_confirmation": true,
+  "action": "send_chat_message",
+  "preview": {
+    "chat_id": "19:abc@thread.v2",
+    "content_preview": "Meeting notes attached.",
+    "content_length": 24
+  }
+}
+```
+
+**Example** — send:
+
+```json
+{
+  "name": "send_chat_message",
+  "arguments": { "chat_id": "19:abc@thread.v2", "content": "Meeting notes attached.", "confirm": true }
+}
+```
+
+**Response** (sent):
+
+```json
+{
+  "success": true,
+  "message_id": "1234567892",
+  "chat_id": "19:abc@thread.v2"
+}
+```
+
+---
+
+### 17. `resolve_meeting`
+
+Resolve a Teams meeting `joinWebUrl` to a meeting ID. Best-effort — may fail if
+the meeting was not created with a calendar association or has expired. Use the
+`joinWebUrl` from `get_chat` on a meeting chat (`chatType=meeting`).
+
+| Parameter      | Type   | Required | Description                                  |
+| -------------- | ------ | -------- | -------------------------------------------- |
+| `join_web_url` | string | yes      | Teams meeting join URL (must be a valid URL) |
+
+**Required scopes**: `OnlineMeetings.Read` (delegated)
+
+**Example**:
+
+```json
+{ "name": "resolve_meeting", "arguments": { "join_web_url": "https://teams.microsoft.com/l/meetup-join/abc" } }
+```
+
+**Response** (success):
+
+```json
+{
+  "meeting_id": "MSoxOjFfYWJj...",
+  "subject": "Sprint Review",
+  "start_at": "2026-01-15T09:00:00Z",
+  "end_at": "2026-01-15T10:00:00Z",
+  "join_web_url": "https://teams.microsoft.com/l/meetup-join/abc",
+  "chat_info": { "threadId": "19:meeting_abc@thread.v2" }
+}
+```
+
+**Response** (not found):
+
+```json
+{
+  "isError": true,
+  "structuredContent": {
+    "error_code": "MEETING_NOT_RESOLVABLE",
+    "message": "No meeting found for the provided joinWebUrl. The meeting may have expired or was created without calendar association.",
+    "join_web_url": "https://teams.microsoft.com/l/meetup-join/expired"
+  }
+}
+```
+
+---
+
+### 18. `list_meeting_transcripts`
+
+List transcripts for a Teams meeting. Returns transcript metadata (not content).
+If transcription was not enabled or the meeting expired, returns
+`available=false` with a reason instead of throwing an error.
+
+| Parameter    | Type   | Required | Description                                |
+| ------------ | ------ | -------- | ------------------------------------------ |
+| `meeting_id` | string | yes      | Meeting ID (from `resolve_meeting` result) |
+
+**Required scopes**: `OnlineMeetingTranscript.Read.All` (delegated)
+
+**Example**:
+
+```json
+{ "name": "list_meeting_transcripts", "arguments": { "meeting_id": "MSoxOjFfYWJj..." } }
+```
+
+**Response** (available):
+
+```json
+{
+  "available": true,
+  "count": 1,
+  "meeting_id": "MSoxOjFfYWJj...",
+  "transcripts": [
+    {
+      "id": "MSMjMCMj...",
+      "meeting_id": "MSoxOjFfYWJj...",
+      "created_at": "2026-01-15T10:00:00Z",
+      "end_at": "2026-01-15T10:30:00Z",
+      "content_correlation_id": "corr-123",
+      "organizer_name": "Jane Doe",
+      "organizer_id": "user-uuid-1"
+    }
+  ]
+}
+```
+
+**Response** (not available):
+
+```json
+{
+  "available": false,
+  "reason": "transcription_not_enabled",
+  "meeting_id": "MSoxOjFfYWJj..."
+}
+```
+
+Possible `reason` values:
+
+| Reason                      | Meaning                                          |
+| --------------------------- | ------------------------------------------------ |
+| `transcription_not_enabled` | Meeting did not have transcription turned on     |
+| `no_permission`             | User lacks permission to access this transcript  |
+| `meeting_expired`           | Meeting data has been purged (retention expired) |
+
+---
+
+### 19. `get_meeting_transcript`
+
+Get metadata for a specific meeting transcript. Returns transcript details
+without content. Use `get_transcript_content` to retrieve the actual WebVTT.
+
+| Parameter       | Type   | Required | Description   |
+| --------------- | ------ | -------- | ------------- |
+| `meeting_id`    | string | yes      | Meeting ID    |
+| `transcript_id` | string | yes      | Transcript ID |
+
+**Required scopes**: `OnlineMeetingTranscript.Read.All` (delegated)
+
+**Example**:
+
+```json
+{ "name": "get_meeting_transcript", "arguments": { "meeting_id": "MSoxOjFfYWJj...", "transcript_id": "MSMjMCMj..." } }
+```
+
+**Response**:
+
+```json
+{
+  "id": "MSMjMCMj...",
+  "meeting_id": "MSoxOjFfYWJj...",
+  "created_at": "2026-01-15T10:00:00Z",
+  "end_at": "2026-01-15T10:30:00Z",
+  "content_correlation_id": "corr-123",
+  "organizer_name": "Jane Doe",
+  "organizer_id": "user-uuid-1"
+}
+```
+
+---
+
+### 20. `get_transcript_content`
+
+Get the WebVTT content of a meeting transcript. Returns plain text with
+timestamps and speaker tags (`<v Speaker>`). If the transcript is not available,
+returns `available=false` with a reason instead of throwing.
+
+| Parameter       | Type    | Required | Description                                          |
+| --------------- | ------- | -------- | ---------------------------------------------------- |
+| `meeting_id`    | string  | yes      | Meeting ID                                           |
+| `transcript_id` | string  | yes      | Transcript ID                                        |
+| `max_chars`     | integer | no       | Max chars for content (1-50000, default from config) |
+
+**Required scopes**: `OnlineMeetingTranscript.Read.All` (delegated)
+
+**Example**:
+
+```json
+{ "name": "get_transcript_content", "arguments": { "meeting_id": "MSoxOjFfYWJj...", "transcript_id": "MSMjMCMj..." } }
+```
+
+**Response** (available):
+
+```json
+{
+  "available": true,
+  "meeting_id": "MSoxOjFfYWJj...",
+  "transcript_id": "MSMjMCMj...",
+  "format": "text/vtt",
+  "content": "WEBVTT\n\n00:00:00.000 --> 00:00:05.000\n<v Jane Doe>Welcome everyone to the sprint review.\n\n00:00:05.500 --> 00:00:12.000\n<v Bob Smith>Thanks Jane. Let me share the demo.",
+  "truncated": false,
+  "content_length": 198
+}
+```
+
+**Response** (not available):
+
+```json
+{
+  "available": false,
+  "reason": "no_permission",
+  "meeting_id": "MSoxOjFfYWJj...",
+  "transcript_id": "MSMjMCMj..."
+}
+```
+
+---
+
+## Required OAuth Scopes (Delegated)
+
+All scopes are **delegated user auth** — not application-only.
+
+| Scope                              | Tools                                                                          |
+| ---------------------------------- | ------------------------------------------------------------------------------ |
+| `Mail.Read`                        | `find` (mail), `get_email`, `get_email_thread`                                 |
+| `Mail.ReadWrite`                   | `compose_email` (draft)                                                        |
+| `Mail.Send`                        | `compose_email` (send, reply, reply_all)                                       |
+| `Calendars.Read`                   | `find` (events), `get_event`                                                   |
+| `Calendars.Read.Shared`            | `find` (events from shared calendars)                                          |
+| `Calendars.ReadWrite`              | `schedule_meeting`, `respond_to_meeting`                                       |
+| `User.Read`                        | `auth` (whoami, status)                                                        |
+| `Files.Read.All`                   | `find` (files), `get_file_metadata`, `get_file_content`                        |
+| `Sites.Read.All`                   | `find` (files on SharePoint)                                                   |
+| `Chat.Read`                        | `list_chats`, `get_chat`, `list_chat_messages`, `get_chat_message`             |
+| `ChatMessage.Send`                 | `send_chat_message`                                                            |
+| `OnlineMeetings.Read`              | `resolve_meeting`                                                              |
+| `OnlineMeetingTranscript.Read.All` | `list_meeting_transcripts`, `get_meeting_transcript`, `get_transcript_content` |
+
+---
 
 ### "Show me my meetings on Monday"
 
@@ -1074,12 +1629,23 @@ List recent audit log entries. Records all write actions and blocked attempts.
 ### "Read the contents of a document I found"
 
 1. Search: `find` with `query: "project proposal"`, `entity_types: ["files"]`
-2. Get content: `get_file_content` with `drive_id` and `item_id` from the file result
+2. Get download URL: `get_file_content` with `drive_id` and `item_id` (defaults to `metadata` mode)
+3. If the client can fetch URLs directly, use the `download_url` from step 2
+4. Otherwise, re-call with `mode: "inline"` (text) or `mode: "binary"` (non-text, ≤10 MB)
 
 ```json
 {
   "name": "get_file_content",
-  "arguments": { "drive_id": "b!abc...", "item_id": "01XYZ...", "max_chars": 20000 }
+  "arguments": { "drive_id": "b!abc...", "item_id": "01XYZ..." }
+}
+```
+
+To read text content inline:
+
+```json
+{
+  "name": "get_file_content",
+  "arguments": { "drive_id": "b!abc...", "item_id": "01XYZ...", "mode": "inline", "max_chars": 20000 }
 }
 ```
 
@@ -1094,6 +1660,64 @@ List recent audit log entries. Records all write actions and blocked attempts.
   "name": "get_email_thread",
   "arguments": { "conversation_id": "AAQk...", "include_full": true }
 }
+```
+
+### "Get the transcript from my last meeting"
+
+This is a multi-step workflow because there is no direct "list my meeting
+transcripts" endpoint. Discovery goes through chat → meeting → transcripts.
+
+1. List meeting chats: `list_chats` with `chat_type: "meeting"`
+2. Get chat details: `get_chat` with the chat ID (to get `joinWebUrl`)
+3. Resolve meeting: `resolve_meeting` with the `join_web_url`
+4. List transcripts: `list_meeting_transcripts` with the `meeting_id`
+5. Get content: `get_transcript_content` with `meeting_id` and `transcript_id`
+
+```json
+{ "name": "list_chats", "arguments": { "chat_type": "meeting", "top": 5 } }
+```
+
+```json
+{ "name": "get_chat", "arguments": { "chat_id": "19:meeting_abc@thread.v2", "include_full": true } }
+```
+
+```json
+{ "name": "resolve_meeting", "arguments": { "join_web_url": "https://teams.microsoft.com/l/meetup-join/abc" } }
+```
+
+```json
+{ "name": "list_meeting_transcripts", "arguments": { "meeting_id": "MSoxOjFfYWJj..." } }
+```
+
+```json
+{ "name": "get_transcript_content", "arguments": { "meeting_id": "MSoxOjFfYWJj...", "transcript_id": "MSMjMCMj..." } }
+```
+
+> **Note**: `resolve_meeting` is best-effort. If it returns
+> `MEETING_NOT_RESOLVABLE`, the meeting may have expired or was created without
+> a calendar association. The agent should inform the user rather than retrying.
+
+> **Note**: `list_meeting_transcripts` and `get_transcript_content` return
+> `available: false` with a `reason` rather than throwing errors when
+> transcripts are unavailable. The agent should handle this gracefully.
+
+### "What was discussed in the Teams chat?"
+
+1. List chats: `list_chats` (optionally filter by `chat_type`)
+2. List messages: `list_chat_messages` with the chat ID
+3. Optionally get specific message: `get_chat_message` for details
+
+```json
+{ "name": "list_chat_messages", "arguments": { "chat_id": "19:abc@thread.v2", "top": 30, "include_full": true } }
+```
+
+### "Send a message to the project chat"
+
+1. List chats: `list_chats` to find the right chat
+2. Send message: `send_chat_message` with `confirm: true`
+
+```json
+{ "name": "send_chat_message", "arguments": { "chat_id": "19:abc@thread.v2", "content": "Updated the design doc.", "confirm": true } }
 ```
 
 ---
@@ -1144,14 +1768,22 @@ Pass `include_full=true` on `get_email`, `get_event`, `get_email_thread`, and
 Read-only `get_*` tools use a short-lived in-memory micro-cache to reduce
 redundant Graph API calls during multi-step agent workflows.
 
-| Tool                | Cache Key                                      | TTL  |
-| ------------------- | ---------------------------------------------- | ---- |
-| `get_email`         | `email:{message_id}`                           | 30 s |
-| `get_event`         | `event:{event_id}`                             | 30 s |
-| `get_email_thread`  | `thread:{conversationId}:{include_full}:{top}` | 30 s |
-| `get_file_metadata` | `file:{drive_id}:{item_id}`                    | 30 s |
+| Tool                       | Cache Key                                      | TTL  |
+| -------------------------- | ---------------------------------------------- | ---- |
+| `get_email`                | `email:{message_id}`                           | 30 s |
+| `get_event`                | `event:{event_id}`                             | 30 s |
+| `get_email_thread`         | `thread:{conversationId}:{include_full}:{top}` | 30 s |
+| `get_file_metadata`        | `file:{drive_id}:{item_id}`                    | 30 s |
+| `list_chats`               | `chats:{chatType}:{expandMembers}:{top}`       | 30 s |
+| `get_chat`                 | `chat:{chatId}`                                | 30 s |
+| `list_chat_messages`       | `chatmsgs:{chatId}:{top}`                      | 30 s |
+| `get_chat_message`         | `chatmsg:{chatId}:{messageId}`                 | 30 s |
+| `resolve_meeting`          | `meeting:{joinWebUrl}`                         | 30 s |
+| `list_meeting_transcripts` | `transcripts:{meetingId}`                      | 30 s |
+| `get_meeting_transcript`   | `transcript:{meetingId}:{transcriptId}`        | 30 s |
 
-- `find` results and `get_file_content` downloads are **not** cached.
-- Write operations (`compose_email`, `schedule_meeting`, `respond_to_meeting`)
-  are never cached.
+- `find` results and `get_file_content` calls (all modes) are **not** cached.
+- `get_transcript_content` is **not** cached (content may be large).
+- Write operations (`compose_email`, `schedule_meeting`, `respond_to_meeting`,
+  `send_chat_message`) are never cached.
 - Maximum 500 cache entries; oldest evicted when full.

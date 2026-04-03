@@ -58,6 +58,9 @@ KV_SECRET_CLIENT_ID="graph-mcp-client-id"
 KV_SECRET_TENANT_ID="graph-mcp-tenant-id"
 KV_SECRET_ALLOW_DOMAINS="graph-mcp-allow-domains"
 KV_SECRET_ENCRYPTION_KEY="graph-mcp-encryption-key"
+KV_SECRET_USER_OID_SUFFIX="-entra-object-id"
+KV_SECRET_USER_OID_LEGACY_SUFFIX="-graph-mcp-object-id"
+USER_OID_SECRET=""
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -211,6 +214,46 @@ check_resource() {
   else
     missing "$label"
   fi
+}
+
+kv_secret_get() {
+  local name="$1"
+  az keyvault secret show --vault-name "$KV" --name "$name" --query value -o tsv 2>/dev/null || true
+}
+
+ensure_user_object_id_secret() {
+  local user="$1"
+  local canonical_secret="${user}${KV_SECRET_USER_OID_SUFFIX}"
+  local legacy_secret="${user}${KV_SECRET_USER_OID_LEGACY_SUFFIX}"
+
+  local canonical_value
+  canonical_value="$(kv_secret_get "$canonical_secret")"
+  if [ -n "$canonical_value" ]; then
+    USER_OID_SECRET="$canonical_secret"
+    return 0
+  fi
+
+  local legacy_value
+  legacy_value="$(kv_secret_get "$legacy_secret")"
+  if [ -n "$legacy_value" ]; then
+    log "Migrating identity secret '${legacy_secret}' -> '${canonical_secret}'"
+    az keyvault secret set --vault-name "$KV" --name "$canonical_secret" --value "$legacy_value" --output none
+    ok "Secret '${canonical_secret}' created from legacy value"
+    USER_OID_SECRET="$canonical_secret"
+    return 0
+  fi
+
+  local upn="${user}@doh.gov.ae"
+  log "Resolving Entra object ID for ${upn}"
+  local resolved_oid
+  resolved_oid="$(az ad user show --id "$upn" --query id -o tsv 2>/dev/null || true)"
+  if [ -z "$resolved_oid" ]; then
+    die "Could not resolve Entra object ID for '${upn}'. Create secret '${canonical_secret}' manually and retry."
+  fi
+
+  az keyvault secret set --vault-name "$KV" --name "$canonical_secret" --value "$resolved_oid" --output none
+  ok "Secret '${canonical_secret}' created from Entra lookup"
+  USER_OID_SECRET="$canonical_secret"
 }
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -650,24 +693,21 @@ deploy_user() {
   echo ""
   log "═══ ${app_name} [${ENV_LABEL}] ═══"
 
-  # Verify per-user KV secret for identity binding
-  local oid_secret="${user}-graph-mcp-object-id"
-  if ! resource_exists "az keyvault secret show --vault-name '$KV' --name '${oid_secret}'"; then
-    die "Secret '${oid_secret}' missing from Key Vault. Create it with the user's Entra object ID before deploying."
-  fi
+  ensure_user_object_id_secret "$user"
+  local oid_secret="$USER_OID_SECRET"
 
   # Container App
   if resource_exists "az containerapp show --name '$app_name' --resource-group '$RG'"; then
     log "Container App exists — updating ..."
-    update_user "$user" "$server" "$tag"
+    update_user "$user" "$server" "$tag" "$oid_secret"
   else
     log "Creating Container App ..."
-    create_user "$user" "$server" "$tag"
+    create_user "$user" "$server" "$tag" "$oid_secret"
   fi
 }
 
 create_user() {
-  local user="$1" server="$2" tag="${3:-latest}"
+  local user="$1" server="$2" tag="${3:-latest}" oid_secret="$4"
   local app_name="${APP_PREFIX}-${user}"
 
   # Phase 1: create with default quickstart image (identity doesn't exist yet,
@@ -714,13 +754,13 @@ create_user() {
   ok "Registry set to managed-identity pull"
 
   # Phase 4: apply full spec — real image, KV secrets, NFS volume, probes
-  apply_yaml "$user" "$server" "$tag"
+  apply_yaml "$user" "$server" "$tag" "$oid_secret"
 
   print_result "$app_name"
 }
 
 update_user() {
-  local user="$1" server="$2" tag="${3:-latest}"
+  local user="$1" server="$2" tag="${3:-latest}" oid_secret="$4"
   local app_name="${APP_PREFIX}-${user}"
 
   # Ensure registry is set before YAML update (so image can be pulled)
@@ -729,7 +769,7 @@ update_user() {
     --server "$server" --identity system \
     --output none 2>/dev/null || true
 
-  apply_yaml "$user" "$server" "$tag"
+  apply_yaml "$user" "$server" "$tag" "$oid_secret"
 
   print_result "$app_name"
 }
@@ -746,7 +786,7 @@ grant_role() {
 }
 
 apply_yaml() {
-  local user="$1" server="$2" tag="${3:-latest}"
+  local user="$1" server="$2" tag="${3:-latest}" oid_secret="$4"
   local app_name="${APP_PREFIX}-${user}"
   local kv_uri="https://${KV}.vault.azure.net"
 
@@ -781,7 +821,7 @@ properties:
         keyVaultUrl: ${kv_uri}/secrets/${KV_SECRET_ENCRYPTION_KEY}
         identity: system
       - name: expected-object-id
-        keyVaultUrl: ${kv_uri}/secrets/${user}-graph-mcp-object-id
+        keyVaultUrl: ${kv_uri}/secrets/${oid_secret}
         identity: system
   template:
     containers:

@@ -4,6 +4,7 @@ import fs from 'fs';
 import path from 'path';
 import {
   resolveStoragePath,
+  requireUserSlug,
   parseRecipients,
   compactText,
   normalizeError,
@@ -12,6 +13,33 @@ import {
   sanitizeEmailHtml,
   escapeODataString,
 } from './helpers.js';
+
+describe('requireUserSlug', () => {
+  const originalUserSlug = process.env.USER_SLUG;
+
+  afterEach(() => {
+    if (originalUserSlug !== undefined) {
+      process.env.USER_SLUG = originalUserSlug;
+    } else {
+      delete process.env.USER_SLUG;
+    }
+  });
+
+  it('returns valid slug', () => {
+    process.env.USER_SLUG = 'jdoe';
+    assert.equal(requireUserSlug(), 'jdoe');
+  });
+
+  it('throws CONFIG_ERROR when USER_SLUG is not set', () => {
+    delete process.env.USER_SLUG;
+    assert.throws(() => requireUserSlug(), { message: /CONFIG_ERROR: USER_SLUG is required/ });
+  });
+
+  it('throws INVALID_USER_SLUG for bad format', () => {
+    process.env.USER_SLUG = 'UPPER_CASE';
+    assert.throws(() => requireUserSlug(), { message: /INVALID_USER_SLUG/ });
+  });
+});
 
 describe('resolveStoragePath', () => {
   let existsSyncMock: ReturnType<typeof mock.method<typeof fs, 'existsSync'>>;
@@ -38,29 +66,28 @@ describe('resolveStoragePath', () => {
     assert.equal(result, '/app/data/jdoe/graph-mcp/tokens');
   });
 
-  it('resolves to /app/<path> when /app exists but no USER_SLUG', () => {
-    existsSyncMock.mock.mockImplementation((p: fs.PathLike) => {
-      const s = String(p);
-      return s === '/app';
-    });
-    const result = resolveStoragePath('graph-mcp/tokens');
-    assert.equal(result, '/app/graph-mcp/tokens');
-  });
-
-  it('resolves to cwd/data/<path> for local dev (no /app, no USER_SLUG)', () => {
+  it('resolves to cwd/data/<slug>/<path> for local dev (no /app/data, USER_SLUG set)', () => {
+    process.env.USER_SLUG = 'dev-local';
     existsSyncMock.mock.mockImplementation(() => false);
     const result = resolveStoragePath('graph-mcp/tokens');
-    assert.equal(result, path.resolve(process.cwd(), 'data', 'graph-mcp/tokens'));
+    assert.equal(result, path.resolve(process.cwd(), 'data', 'dev-local', 'graph-mcp/tokens'));
   });
 
-  it('throws STORAGE_PATH_ERROR when USER_SLUG set but /app/data missing', () => {
+  it('throws CONFIG_ERROR when USER_SLUG is not set', () => {
+    existsSyncMock.mock.mockImplementation(() => false);
+    assert.throws(() => resolveStoragePath('graph-mcp/tokens'), {
+      message: /CONFIG_ERROR: USER_SLUG is required/,
+    });
+  });
+
+  it('throws STORAGE_PATH_ERROR when /app exists but /app/data missing (broken container)', () => {
     process.env.USER_SLUG = 'jdoe';
     existsSyncMock.mock.mockImplementation((p: fs.PathLike) => {
       const s = String(p);
-      return s === '/app'; // /app/data doesn't exist, but /app does
+      return s === '/app'; // /app exists but /app/data doesn't
     });
     assert.throws(() => resolveStoragePath('graph-mcp/tokens'), {
-      message: 'STORAGE_PATH_ERROR: USER_SLUG is set but /app/data is not mounted',
+      message: /STORAGE_PATH_ERROR/,
     });
   });
 
@@ -115,6 +142,22 @@ describe('normalizeError', () => {
     const result = normalizeError('string error');
     assert.equal(result.code, 'INTERNAL_ERROR');
     assert.equal(result.message, 'string error');
+  });
+  it('recognizes AUTH_MISMATCH error code', () => {
+    const result = normalizeError(new Error('AUTH_MISMATCH: expected=abc actual=def'));
+    assert.equal(result.code, 'AUTH_MISMATCH');
+  });
+  it('recognizes CONFIG_ERROR error code', () => {
+    const result = normalizeError(new Error('CONFIG_ERROR: EXPECTED_AAD_OBJECT_ID is required'));
+    assert.equal(result.code, 'CONFIG_ERROR');
+  });
+  it('recognizes TOKEN_CACHE_CORRUPTED error code', () => {
+    const result = normalizeError(new Error('TOKEN_CACHE_CORRUPTED: multiple accounts match OID'));
+    assert.equal(result.code, 'TOKEN_CACHE_CORRUPTED');
+  });
+  it('recognizes FILE_TOO_LARGE error code', () => {
+    const result = normalizeError(new Error('FILE_TOO_LARGE: file exceeds 10 MB limit'));
+    assert.equal(result.code, 'FILE_TOO_LARGE');
   });
 });
 

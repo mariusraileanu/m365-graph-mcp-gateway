@@ -348,6 +348,12 @@ make add-user U=jdoe
 
 This creates a per-user Container App named `ca-graph-mcp-gw-<env>-<user>` (e.g., `ca-graph-mcp-gw-prod-jdoe`). The creation happens in 4 phases:
 
+Before deployment, identity pinning is sourced from Key Vault secret `<slug>-entra-object-id`.
+
+- If `<slug>-entra-object-id` exists, it is used directly.
+- If missing but legacy `<slug>-graph-mcp-object-id` exists, the script migrates it automatically.
+- If both are missing, the script resolves `${slug}@doh.gov.ae` in Entra ID and creates `<slug>-entra-object-id`.
+
 1. **Create** — Deploys a Container App with a default quickstart image and system-assigned managed identity. At this point the identity doesn't exist yet, so we can't pull from ACR or reference Key Vault secrets.
 
 2. **RBAC** — Grants the new managed identity:
@@ -358,11 +364,12 @@ This creates a per-user Container App named `ca-graph-mcp-gw-<env>-<user>` (e.g.
 3. **Registry** — Configures the Container App to pull from ACR using its managed identity (no admin credentials or access keys).
 
 4. **YAML Update** — Applies the full container spec:
-   - Real image from ACR
-   - Key Vault secret references for `GRAPH_MCP_CLIENT_ID` and `GRAPH_MCP_TENANT_ID`
-   - NFS volume mount at `/app/data`
-   - Environment variables (`HOST`, `PORT`, `NODE_ENV`, `USER_SLUG`)
-   - Health probes (liveness, readiness, startup)
+    - Real image from ACR
+    - Key Vault secret references for `GRAPH_MCP_CLIENT_ID` and `GRAPH_MCP_TENANT_ID`
+    - Key Vault secret reference for `EXPECTED_AAD_OBJECT_ID` (from `<slug>-entra-object-id`)
+    - NFS volume mount at `/app/data`
+    - Environment variables (`HOST`, `PORT`, `NODE_ENV`, `USER_SLUG`)
+    - Health probes (liveness, readiness, startup)
    - Scale rule: `minReplicas=1`, `maxReplicas=1`
 
 If the Container App already exists, `add-user` skips to phase 4 (YAML update) — this is how you roll out image updates.

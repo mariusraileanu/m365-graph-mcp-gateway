@@ -10,6 +10,7 @@ export function pickFile(item: Record<string, unknown>, includeFullPayload: bool
     modified_at: item.lastModifiedDateTime,
     size: item.size,
     web_url: item.webUrl,
+    download_url: (item['@microsoft.graph.downloadUrl'] as string) || null,
   };
   if (!includeFullPayload) return minimal;
   return {

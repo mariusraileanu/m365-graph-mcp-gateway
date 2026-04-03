@@ -10,6 +10,7 @@ let mockAccounts: Array<{
 let renameCalls: Array<{ oldPath: string; newPath: string }> = [];
 let renameError: Error | null = null;
 let expectedObjectIdEnv: string | undefined;
+let atomicWriteCalls: Array<{ filePath: string; content: string }> = [];
 
 mock.module('../config/index.js', {
   namedExports: {
@@ -38,6 +39,7 @@ mock.module('../config/index.js', {
 mock.module('../utils/helpers.js', {
   namedExports: {
     resolveStoragePath: () => '/tmp/test-identity-tokens',
+    requireUserSlug: () => 'test-user',
   },
 });
 
@@ -58,7 +60,9 @@ mock.module('./crypto.js', {
 
 mock.module('../utils/file.js', {
   namedExports: {
-    atomicWriteFile: async () => {},
+    atomicWriteFile: async (filePath: string, content: string) => {
+      atomicWriteCalls.push({ filePath, content });
+    },
     safeReadFile: async () => null,
   },
 });
@@ -109,11 +113,12 @@ mock.module('../mcp/server.js', {
 
 const { verifyIdentityBinding } = await import('./index.js');
 
-describe('verifyIdentityBinding (object-id mode)', () => {
+describe('verifyIdentityBinding (OID-based matching)', () => {
   beforeEach(() => {
     renameCalls = [];
     renameError = null;
     mockAccounts = [];
+    atomicWriteCalls = [];
     expectedObjectIdEnv = undefined;
   });
 
@@ -121,7 +126,7 @@ describe('verifyIdentityBinding (object-id mode)', () => {
     expectedObjectIdEnv = undefined;
   });
 
-  it('skips check when EXPECTED_AAD_OBJECT_ID is not set', async () => {
+  it('throws CONFIG_ERROR when EXPECTED_AAD_OBJECT_ID is not set', async () => {
     mockAccounts = [
       {
         homeAccountId: 'h1',
@@ -130,12 +135,7 @@ describe('verifyIdentityBinding (object-id mode)', () => {
       },
     ];
 
-    const result = await verifyIdentityBinding();
-
-    assert.equal(result.checked, false);
-    assert.equal(result.mismatch, false);
-    assert.equal(result.expected_object_id, null);
-    assert.equal(renameCalls.length, 0);
+    await assert.rejects(() => verifyIdentityBinding(), /CONFIG_ERROR/);
   });
 
   it('passes when claim oid matches expected object id', async () => {
@@ -214,7 +214,7 @@ describe('verifyIdentityBinding (object-id mode)', () => {
     assert.equal(result.mismatch, true);
     assert.equal(result.cached_object_id, null);
     assert.equal(renameCalls.length, 1);
-    assert.ok(result.reason?.includes('TOKEN_IDENTITY_UNKNOWN'));
+    assert.ok(result.reason?.includes('TOKEN_IDENTITY_MISMATCH'));
   });
 
   it('handles rename failure gracefully', async () => {
@@ -232,5 +232,116 @@ describe('verifyIdentityBinding (object-id mode)', () => {
 
     assert.equal(result.mismatch, true);
     assert.equal(result.cached_user, 'bob@example.com');
+  });
+
+  it('selects correct account when multiple accounts exist with one match', async () => {
+    expectedObjectIdEnv = '11111111-1111-4111-8111-111111111111';
+    mockAccounts = [
+      {
+        homeAccountId: 'h1',
+        username: 'wrong@example.com',
+        localAccountId: '99999999-9999-4999-8999-999999999999',
+        idTokenClaims: { oid: '99999999-9999-4999-8999-999999999999' },
+      },
+      {
+        homeAccountId: 'h2',
+        username: 'correct@example.com',
+        localAccountId: '11111111-1111-4111-8111-111111111111',
+        idTokenClaims: { oid: '11111111-1111-4111-8111-111111111111' },
+      },
+    ];
+
+    const result = await verifyIdentityBinding();
+
+    assert.equal(result.checked, true);
+    assert.equal(result.mismatch, false);
+    assert.equal(result.cached_user, 'correct@example.com');
+    assert.equal(result.cached_object_id, '11111111-1111-4111-8111-111111111111');
+    assert.equal(renameCalls.length, 0);
+  });
+
+  it('quarantines when multiple accounts exist and none match', async () => {
+    expectedObjectIdEnv = '11111111-1111-4111-8111-111111111111';
+    mockAccounts = [
+      {
+        homeAccountId: 'h1',
+        username: 'alice@example.com',
+        localAccountId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        idTokenClaims: { oid: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' },
+      },
+      {
+        homeAccountId: 'h2',
+        username: 'bob@example.com',
+        localAccountId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+        idTokenClaims: { oid: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' },
+      },
+    ];
+
+    const result = await verifyIdentityBinding();
+
+    assert.equal(result.checked, true);
+    assert.equal(result.mismatch, true);
+    assert.equal(renameCalls.length, 1);
+    assert.ok(result.reason?.includes('TOKEN_IDENTITY_MISMATCH'));
+  });
+
+  it('quarantines when multiple accounts match the same OID (corrupted cache)', async () => {
+    expectedObjectIdEnv = '11111111-1111-4111-8111-111111111111';
+    mockAccounts = [
+      {
+        homeAccountId: 'h1',
+        username: 'alice@example.com',
+        localAccountId: '11111111-1111-4111-8111-111111111111',
+        idTokenClaims: { oid: '11111111-1111-4111-8111-111111111111' },
+      },
+      {
+        homeAccountId: 'h2',
+        username: 'alice-dup@example.com',
+        localAccountId: '11111111-1111-4111-8111-111111111111',
+        idTokenClaims: { oid: '11111111-1111-4111-8111-111111111111' },
+      },
+    ];
+
+    const result = await verifyIdentityBinding();
+
+    assert.equal(result.checked, true);
+    assert.equal(result.mismatch, true);
+    assert.equal(renameCalls.length, 1);
+    assert.ok(result.reason?.includes('TOKEN_CACHE_CORRUPTED'));
+  });
+
+  it('writes metadata file on successful verification', async () => {
+    expectedObjectIdEnv = '11111111-1111-4111-8111-111111111111';
+    mockAccounts = [
+      {
+        homeAccountId: 'h1',
+        username: 'alice@example.com',
+        localAccountId: '11111111-1111-4111-8111-111111111111',
+        idTokenClaims: { oid: '11111111-1111-4111-8111-111111111111' },
+      },
+    ];
+
+    await verifyIdentityBinding();
+
+    // Should have written metadata file
+    const metaWrite = atomicWriteCalls.find((c) => c.filePath.includes('token-cache.meta.json'));
+    assert.ok(metaWrite, 'should write token-cache.meta.json');
+    const metadata = JSON.parse(metaWrite.content);
+    assert.equal(metadata.expected_aad_object_id, '11111111-1111-4111-8111-111111111111');
+    assert.ok(metadata.created_at);
+    assert.ok(metadata.last_validated_at);
+  });
+
+  it('skips gracefully with no cached accounts', async () => {
+    expectedObjectIdEnv = '11111111-1111-4111-8111-111111111111';
+    mockAccounts = [];
+
+    const result = await verifyIdentityBinding();
+
+    assert.equal(result.checked, true);
+    assert.equal(result.mismatch, false);
+    assert.equal(result.cached_user, null);
+    assert.equal(result.expected_object_id, '11111111-1111-4111-8111-111111111111');
+    assert.equal(renameCalls.length, 0);
   });
 });
