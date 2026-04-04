@@ -7,6 +7,7 @@ import { respondMeetingTools } from './respond-meeting.js';
 import { auditTools } from './audit.js';
 import { teamsChatTools } from './teams-chat.js';
 import { teamsMeetingTools } from './teams-meeting.js';
+import { retrievalTools } from './retrieve-context.js';
 import { fail, normalizeError } from '../utils/helpers.js';
 import type { ToolSpec, ToolResult } from '../utils/types.js';
 
@@ -20,6 +21,7 @@ export const tools: ToolSpec[] = [
   ...auditTools,
   ...teamsChatTools,
   ...teamsMeetingTools,
+  ...retrievalTools,
 ];
 
 const toolMap = new Map(tools.map((t) => [t.name, t]));

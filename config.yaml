@@ -50,3 +50,10 @@ storage:
 
 server:
   apiKey: '${GRAPH_MCP_API_KEY}'
+
+retrieval:
+  defaultDataSource: 'sharePoint'
+  defaultMaxResults: 10
+
+parsers:
+  defaultMaxChars: 50000

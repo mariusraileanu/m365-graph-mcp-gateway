@@ -64,6 +64,17 @@ const ConfigSchema = z.object({
       expectedAadObjectId: z.string().optional(),
     })
     .default({}),
+  retrieval: z
+    .object({
+      defaultDataSource: z.enum(['sharePoint', 'oneDriveBusiness', 'externalItem']).default('sharePoint'),
+      defaultMaxResults: z.number().int().positive().max(25).default(10),
+    })
+    .default({}),
+  parsers: z
+    .object({
+      defaultMaxChars: z.number().int().positive().default(50000),
+    })
+    .default({}),
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
@@ -75,6 +86,8 @@ export type SearchConfig = Config['search'];
 export type CalendarConfig = Config['calendar'];
 export type StorageConfig = Config['storage'];
 export type ServerConfig = Config['server'];
+export type RetrievalConfig = Config['retrieval'];
+export type ParsersConfig = Config['parsers'];
 
 function normalizeAadObjectId(value: string): string {
   return value.trim().toLowerCase();

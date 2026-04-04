@@ -107,7 +107,7 @@ export const findTools: ToolSpec[] = [
           searchFiles(queryString, top, 'both', false).then((results) => ({
             type: 'files',
             provider: 'graph-search',
-            results: results.map((f) => ({ type: 'file', ...f })),
+            results: results.map((f) => ({ type: 'file', item_id: f.id, ...f })),
           })),
         );
       }

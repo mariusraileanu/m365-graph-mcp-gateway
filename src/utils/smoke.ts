@@ -132,13 +132,13 @@ export async function runSmoke(): Promise<void> {
     const toolsResult = await mcpCall(1, 'tools/list', {});
     assertOk('tools/list', toolsResult);
 
-    // A1: Verify exactly 20 tools are registered (11 Phase 1 + 9 Phase 2 Teams)
+    // A1: Verify exactly 22 tools are registered (11 Phase 1 + 9 Phase 2 Teams + 2 Phase 3 Retrieval)
     const toolsPayload = toolsResult.result as { tools?: Array<{ name?: string }> } | undefined;
     const toolCount = toolsPayload?.tools?.length ?? -1;
-    if (toolCount === 20) {
+    if (toolCount === 22) {
       pass(`tools/list count = ${toolCount}`);
     } else {
-      fail(`tools/list count = ${toolCount} (expected 20)`);
+      fail(`tools/list count = ${toolCount} (expected 22)`);
     }
 
     // A2: Verify all 9 Teams tools are present
@@ -159,6 +159,15 @@ export async function runSmoke(): Promise<void> {
       pass('all 9 Teams tools registered');
     } else {
       fail(`missing Teams tools: ${missingTeams.join(', ')}`);
+    }
+
+    // A3: Verify both Phase 3 Retrieval tools are present
+    const retrievalTools = ['retrieve_context', 'retrieve_context_multi'];
+    const missingRetrieval = retrievalTools.filter((t) => !registeredNames.has(t));
+    if (missingRetrieval.length === 0) {
+      pass('both Retrieval tools registered');
+    } else {
+      fail(`missing Retrieval tools: ${missingRetrieval.join(', ')}`);
     }
   } catch (err) {
     fail('tools/list', errMsg(err));

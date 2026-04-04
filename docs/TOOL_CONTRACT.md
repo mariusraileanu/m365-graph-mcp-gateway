@@ -279,6 +279,10 @@ Errors use a `CODE: message` pattern:
 | `MEETING_NOT_RESOLVABLE`     | joinWebUrl filter returned 0 meetings — expired or no calendar association |
 | `MISSING_JOIN_WEB_URL`       | Chat has no onlineMeetingInfo.joinWebUrl                                   |
 | `TRANSCRIPT_NOT_AVAILABLE`   | Transcription not enabled, not ready, meeting expired, or no permission    |
+| `UNSUPPORTED_FILE_TYPE`      | File extension not supported for parsed mode extraction                    |
+| `PARSE_ERROR`                | File parsing failed (corrupt or unreadable file)                           |
+| `INVALID_KQL_FIELD`          | KQL filter uses an unsupported field name                                  |
+| `INVALID_KQL_FILTER`         | KQL filter_expression has invalid syntax (unbalanced quotes/parens)        |
 
 ---
 
@@ -317,7 +321,7 @@ configurable domain allowlist before any email is sent or meeting is scheduled.
 
 ---
 
-## Tools Reference (20 tools)
+## Tools Reference (22 tools)
 
 ### 1. `auth`
 
@@ -571,6 +575,7 @@ Uses Graph Search API.
     {
       "type": "file",
       "id": "01XYZ...",
+      "item_id": "01XYZ...",
       "drive_id": "b!abc...",
       "name": "Budget_Q4_2026.xlsx",
       "path": "/drives/b!abc.../root:/Finance/Reports",
@@ -582,6 +587,10 @@ Uses Graph Search API.
   ]
 }
 ```
+
+> **Note**: File results include both `id` and `item_id` (same value) for
+> clarity. Use `drive_id` + `item_id` when calling `get_file_metadata`,
+> `get_file_content`, or other file tools.
 
 ---
 
@@ -797,23 +806,24 @@ date, web URL, and creator info.
 
 ### 7. `get_file_content`
 
-Access file content from OneDrive/SharePoint. Supports three modes to avoid
+Access file content from OneDrive/SharePoint. Supports four modes to avoid
 unnecessary large downloads.
 
-| Parameter   | Type    | Required | Description                                                                |
-| ----------- | ------- | -------- | -------------------------------------------------------------------------- |
-| `drive_id`  | string  | yes      | Drive ID from `find` file results                                          |
-| `item_id`   | string  | yes      | Item ID from `find` file results                                           |
-| `mode`      | enum    | no       | `"metadata"` (default), `"inline"`, `"binary"` — see below                 |
-| `max_chars` | integer | no       | Max chars for text content in `inline` mode (1-50000, default from config) |
+| Parameter   | Type    | Required | Description                                                                              |
+| ----------- | ------- | -------- | ---------------------------------------------------------------------------------------- |
+| `drive_id`  | string  | yes      | Drive ID from `find` file results                                                        |
+| `item_id`   | string  | yes      | Item ID from `find` file results                                                         |
+| `mode`      | enum    | no       | `"metadata"` (default), `"inline"`, `"binary"`, `"parsed"` — see below                   |
+| `max_chars` | integer | no       | Max chars for text content in `inline` and `parsed` modes (1-50000, default from config) |
 
 #### Modes
 
-| Mode       | Behavior                                                                               |
-| ---------- | -------------------------------------------------------------------------------------- |
-| `metadata` | Returns file info + pre-authenticated `download_url` (valid ~1 hour). **No download.** |
-| `inline`   | Downloads and returns text content as UTF-8. Text MIME types only, ≤10 MB.             |
-| `binary`   | Downloads and returns base64-encoded content. Any MIME type, ≤10 MB.                   |
+| Mode       | Behavior                                                                                                                                                                                 |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `metadata` | Returns file info + pre-authenticated `download_url` (valid ~1 hour). **No download.**                                                                                                   |
+| `inline`   | Downloads and returns text content as UTF-8. Text MIME types only, ≤10 MB.                                                                                                               |
+| `binary`   | Downloads and returns base64-encoded content. Any MIME type, ≤10 MB.                                                                                                                     |
+| `parsed`   | Downloads and extracts readable text from Office/PDF files, ≤50 MB. Supports: `.pptx`, `.docx`, `.pdf`, `.xlsx`, `.odt`, `.odp`, `.ods`, `.rtf`. Returns plain text + document metadata. |
 
 **Default is `metadata`** — always prefer this mode and let the client fetch via
 `download_url` to avoid buffering large files through the gateway.
@@ -883,6 +893,53 @@ unnecessary large downloads.
 }
 ```
 
+**Example** — extract text from a PowerPoint presentation:
+
+```json
+{
+  "name": "get_file_content",
+  "arguments": { "drive_id": "b!abc...", "item_id": "01XYZ...", "mode": "parsed", "max_chars": 30000 }
+}
+```
+
+**Response** (parsed):
+
+```json
+{
+  "name": "Q4_Review.pptx",
+  "document_type": "pptx",
+  "size_bytes": 2457600,
+  "content": "Slide 1: Q4 Business Review\n\nKey Highlights\n- Revenue up 15% YoY\n- 3 new product launches...",
+  "truncated": false,
+  "char_count": 8450,
+  "metadata": {
+    "title": "Q4 Business Review",
+    "creator": "Jane Doe",
+    "slides": 24
+  }
+}
+```
+
+**Error** — unsupported file type in parsed mode:
+
+```json
+{
+  "isError": true,
+  "content": [
+    {
+      "type": "text",
+      "text": "UNSUPPORTED_FILE_TYPE: File 'image.png' cannot be parsed. Supported: .pptx, .docx, .pdf, .xlsx, .odt, .odp, .ods, .rtf"
+    }
+  ],
+  "structuredContent": {
+    "name": "image.png",
+    "mime_type": "image/png",
+    "download_url": "https://contoso.sharepoint.com/_layouts/15/download.aspx?UniqueId=...",
+    "web_url": "https://contoso.sharepoint.com/sites/..."
+  }
+}
+```
+
 **Error** — file too large (inline or binary mode, >10 MB):
 
 ```json
@@ -922,7 +979,9 @@ unnecessary large downloads.
 }
 ```
 
-> **Note**: Files over 10 MB are never buffered in-memory. The `metadata` mode
+> **Note**: Files over 10 MB are never buffered in-memory in inline/binary
+> modes. The `parsed` mode allows up to 50 MB for Office/PDF files since
+> text extraction is much smaller than the raw file. The `metadata` mode
 > works for files of any size since it only fetches Graph metadata. The
 > `download_url` is a pre-authenticated SharePoint URL valid for approximately
 > 1 hour — clients can fetch it directly without going through the gateway.
@@ -1539,25 +1598,210 @@ returns `available=false` with a reason instead of throwing.
 
 ---
 
+### 21. `retrieve_context`
+
+Semantic search across Microsoft 365 content using the Copilot Retrieval API.
+Returns relevant text extracts with relevance scores from SharePoint, OneDrive
+for Business, or external items. Use for grounding — finding contextually
+relevant content across the user's M365 tenant.
+
+| Parameter               | Type   | Required | Description                                                                        |
+| ----------------------- | ------ | -------- | ---------------------------------------------------------------------------------- |
+| `query`                 | string | yes      | Natural language query (max 1500 chars, single sentence)                           |
+| `data_source`           | enum   | no       | `"sharePoint"` (default), `"oneDriveBusiness"`, `"externalItem"`. One per request. |
+| `max_results`           | int    | no       | Max results (1-25, default 10)                                                     |
+| `filter_expression`     | string | no       | Raw KQL filter expression. Overrides structured `filter_*` params.                 |
+| `filter_author`         | string | no       | Filter by author name                                                              |
+| `filter_file_extension` | string | no       | Filter by file extension (e.g. `"docx"`, `"pdf"`)                                  |
+| `filter_filename`       | string | no       | Filter by filename (partial match)                                                 |
+| `filter_path`           | string | no       | Filter by SharePoint/OneDrive path                                                 |
+| `filter_site_id`        | string | no       | Filter by SharePoint Site ID                                                       |
+| `filter_title`          | string | no       | Filter by document title                                                           |
+| `filter_modified_after` | string | no       | Filter to files modified after this ISO date                                       |
+| `filter_join`           | enum   | no       | Join structured filters: `"AND"` (default) or `"OR"`                               |
+
+**Supported KQL fields**: `Author`, `FileExtension`, `Filename`, `FileType`,
+`InformationProtectionLabelId`, `LastModifiedTime`, `ModifiedBy`, `Path`,
+`SiteID`, `Title`.
+
+**Rate limit**: 200 requests per user per hour.
+
+**Required scopes**: `Files.Read.All` + `Sites.Read.All` (delegated)
+
+**Example** — basic semantic search:
+
+```json
+{
+  "name": "retrieve_context",
+  "arguments": {
+    "query": "Q4 revenue projections and forecast assumptions",
+    "data_source": "sharePoint",
+    "max_results": 10
+  }
+}
+```
+
+**Example** — with structured filters:
+
+```json
+{
+  "name": "retrieve_context",
+  "arguments": {
+    "query": "project timeline and milestones",
+    "filter_author": "Jane Doe",
+    "filter_file_extension": "pptx",
+    "filter_modified_after": "2026-01-01T00:00:00Z"
+  }
+}
+```
+
+**Example** — with raw KQL filter:
+
+```json
+{
+  "name": "retrieve_context",
+  "arguments": {
+    "query": "security compliance checklist",
+    "filter_expression": "Author:\"Jane Doe\" AND FileExtension:docx AND Path:\"https://contoso.sharepoint.com/sites/Compliance\""
+  }
+}
+```
+
+**Response**:
+
+```json
+{
+  "query": "Q4 revenue projections and forecast assumptions",
+  "data_source": "sharePoint",
+  "hit_count": 3,
+  "max_results": 10,
+  "hits": [
+    {
+      "web_url": "https://contoso.sharepoint.com/sites/Finance/Q4_Forecast.xlsx",
+      "resource_type": "driveItem",
+      "sensitivity_label": null,
+      "extracts": [
+        {
+          "text": "Q4 revenue is projected at $12.5M based on current pipeline and seasonal trends...",
+          "relevance_score": 0.92
+        }
+      ],
+      "resource_metadata": {
+        "title": "Q4 Revenue Forecast",
+        "lastModifiedDateTime": "2026-03-15T14:30:00Z"
+      }
+    }
+  ]
+}
+```
+
+> **Note**: Results are unordered — optimized for context recall, not ranked
+> search. Extracts include `relevance_score` but results may arrive in any
+> order. If `filter_expression` has invalid KQL syntax, the Retrieval API
+> silently ignores it and executes unscoped. The gateway validates balanced
+> quotes/parentheses client-side to catch common mistakes.
+
+---
+
+### 22. `retrieve_context_multi`
+
+Batched semantic search — send up to 20 queries in a single Graph `$batch`
+call. All queries share the same `data_source` and optional filter. Returns an
+array of results, one per query. Use when you need to ground an agent on
+multiple topics simultaneously.
+
+| Parameter               | Type     | Required | Description                                                      |
+| ----------------------- | -------- | -------- | ---------------------------------------------------------------- |
+| `queries`               | string[] | yes      | Array of natural language queries (1-20, each max 1500 chars)    |
+| `data_source`           | enum     | no       | `"sharePoint"` (default), `"oneDriveBusiness"`, `"externalItem"` |
+| `max_results`           | int      | no       | Max results per query (1-25, default 10)                         |
+| `filter_expression`     | string   | no       | Raw KQL filter expression. Shared across all queries.            |
+| `filter_author`         | string   | no       | Filter by author name                                            |
+| `filter_file_extension` | string   | no       | Filter by file extension                                         |
+| `filter_filename`       | string   | no       | Filter by filename                                               |
+| `filter_path`           | string   | no       | Filter by SharePoint/OneDrive path                               |
+| `filter_site_id`        | string   | no       | Filter by SharePoint Site ID                                     |
+| `filter_title`          | string   | no       | Filter by document title                                         |
+| `filter_modified_after` | string   | no       | Filter to files modified after this ISO date                     |
+| `filter_join`           | enum     | no       | Join structured filters: `"AND"` (default) or `"OR"`             |
+
+**Rate limit**: Each query in the batch counts toward the 200 requests/user/hour limit.
+
+**Required scopes**: `Files.Read.All` + `Sites.Read.All` (delegated)
+
+**Example** — meeting preparation batch:
+
+```json
+{
+  "name": "retrieve_context_multi",
+  "arguments": {
+    "queries": ["Q4 revenue projections", "product roadmap updates", "customer feedback summary"],
+    "data_source": "sharePoint",
+    "max_results": 5
+  }
+}
+```
+
+**Response**:
+
+```json
+{
+  "query_count": 3,
+  "total_hits": 8,
+  "data_source": "sharePoint",
+  "max_results": 5,
+  "results": [
+    {
+      "query": "Q4 revenue projections",
+      "data_source": "sharePoint",
+      "hit_count": 3,
+      "hits": [
+        {
+          "web_url": "https://contoso.sharepoint.com/sites/Finance/Q4_Forecast.xlsx",
+          "resource_type": "driveItem",
+          "sensitivity_label": null,
+          "extracts": [{ "text": "Revenue target: $12.5M...", "relevance_score": 0.91 }],
+          "resource_metadata": {}
+        }
+      ]
+    },
+    {
+      "query": "product roadmap updates",
+      "data_source": "sharePoint",
+      "hit_count": 3,
+      "hits": []
+    },
+    {
+      "query": "customer feedback summary",
+      "data_source": "sharePoint",
+      "hit_count": 2,
+      "hits": []
+    }
+  ]
+}
+```
+
+---
+
 ## Required OAuth Scopes (Delegated)
 
 All scopes are **delegated user auth** — not application-only.
 
-| Scope                              | Tools                                                                          |
-| ---------------------------------- | ------------------------------------------------------------------------------ |
-| `Mail.Read`                        | `find` (mail), `get_email`, `get_email_thread`                                 |
-| `Mail.ReadWrite`                   | `compose_email` (draft)                                                        |
-| `Mail.Send`                        | `compose_email` (send, reply, reply_all)                                       |
-| `Calendars.Read`                   | `find` (events), `get_event`                                                   |
-| `Calendars.Read.Shared`            | `find` (events from shared calendars)                                          |
-| `Calendars.ReadWrite`              | `schedule_meeting`, `respond_to_meeting`                                       |
-| `User.Read`                        | `auth` (whoami, status)                                                        |
-| `Files.Read.All`                   | `find` (files), `get_file_metadata`, `get_file_content`                        |
-| `Sites.Read.All`                   | `find` (files on SharePoint)                                                   |
-| `Chat.Read`                        | `list_chats`, `get_chat`, `list_chat_messages`, `get_chat_message`             |
-| `ChatMessage.Send`                 | `send_chat_message`                                                            |
-| `OnlineMeetings.Read`              | `resolve_meeting`                                                              |
-| `OnlineMeetingTranscript.Read.All` | `list_meeting_transcripts`, `get_meeting_transcript`, `get_transcript_content` |
+| Scope                              | Tools                                                                                                 |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `Mail.Read`                        | `find` (mail), `get_email`, `get_email_thread`                                                        |
+| `Mail.ReadWrite`                   | `compose_email` (draft)                                                                               |
+| `Mail.Send`                        | `compose_email` (send, reply, reply_all)                                                              |
+| `Calendars.Read`                   | `find` (events), `get_event`                                                                          |
+| `Calendars.Read.Shared`            | `find` (events from shared calendars)                                                                 |
+| `Calendars.ReadWrite`              | `schedule_meeting`, `respond_to_meeting`                                                              |
+| `User.Read`                        | `auth` (whoami, status)                                                                               |
+| `Files.Read.All`                   | `find` (files), `get_file_metadata`, `get_file_content`, `retrieve_context`, `retrieve_context_multi` |
+| `Sites.Read.All`                   | `find` (files on SharePoint), `retrieve_context`, `retrieve_context_multi`                            |
+| `Chat.Read`                        | `list_chats`, `get_chat`, `list_chat_messages`, `get_chat_message`                                    |
+| `ChatMessage.Send`                 | `send_chat_message`                                                                                   |
+| `OnlineMeetings.Read`              | `resolve_meeting`                                                                                     |
+| `OnlineMeetingTranscript.Read.All` | `list_meeting_transcripts`, `get_meeting_transcript`, `get_transcript_content`                        |
 
 ---
 
@@ -1649,6 +1893,20 @@ To read text content inline:
 }
 ```
 
+To extract text from an Office document or PDF:
+
+```json
+{
+  "name": "get_file_content",
+  "arguments": { "drive_id": "b!abc...", "item_id": "01XYZ...", "mode": "parsed", "max_chars": 30000 }
+}
+```
+
+> **Tip**: Use `parsed` mode for `.pptx`, `.docx`, `.pdf`, `.xlsx`, `.odt`,
+> `.odp`, `.ods`, `.rtf` files. It extracts readable text + document metadata
+> (title, author, page/slide count). Use `inline` for plain text files (`.md`,
+> `.txt`, `.json`, `.csv`). Use `metadata` when you just need the download URL.
+
 ### "Catch me up on an email conversation"
 
 1. Search: `find` with `query: "project kickoff from Alice"`, `entity_types: ["mail"]`
@@ -1720,6 +1978,58 @@ transcripts" endpoint. Discovery goes through chat → meeting → transcripts.
 { "name": "send_chat_message", "arguments": { "chat_id": "19:abc@thread.v2", "content": "Updated the design doc.", "confirm": true } }
 ```
 
+### "Find relevant context about a topic across SharePoint"
+
+Use `retrieve_context` for semantic grounding — it returns relevant text
+extracts from across the user's M365 content, ranked by relevance.
+
+```json
+{
+  "name": "retrieve_context",
+  "arguments": {
+    "query": "What is our approach to data privacy compliance?",
+    "data_source": "sharePoint",
+    "max_results": 10
+  }
+}
+```
+
+To search with filters (e.g. only recent PowerPoint files by a specific author):
+
+```json
+{
+  "name": "retrieve_context",
+  "arguments": {
+    "query": "Q4 strategy and priorities",
+    "filter_author": "Jane Doe",
+    "filter_file_extension": "pptx",
+    "filter_modified_after": "2026-01-01T00:00:00Z"
+  }
+}
+```
+
+### "Ground me on multiple topics for a meeting"
+
+Use `retrieve_context_multi` to search for multiple topics in a single batch
+call. All queries share the same data source and optional filter.
+
+```json
+{
+  "name": "retrieve_context_multi",
+  "arguments": {
+    "queries": ["Q4 revenue forecast and targets", "product launch timeline", "customer satisfaction metrics"],
+    "data_source": "sharePoint",
+    "max_results": 5
+  }
+}
+```
+
+> **Note**: `retrieve_context` and `retrieve_context_multi` use the Copilot
+> Retrieval API, which is different from `find`. `find` returns structured
+> search hits (mail, files, events) from the Graph Search API. `retrieve_context`
+> returns semantic text extracts optimized for LLM grounding — short passages
+> with relevance scores, ideal for providing context to an agent.
+
 ---
 
 ## Timezone Handling
@@ -1783,6 +2093,7 @@ redundant Graph API calls during multi-step agent workflows.
 | `get_meeting_transcript`   | `transcript:{meetingId}:{transcriptId}`        | 30 s |
 
 - `find` results and `get_file_content` calls (all modes) are **not** cached.
+- `retrieve_context` and `retrieve_context_multi` are **not** cached (results depend on semantic relevance).
 - `get_transcript_content` is **not** cached (content may be large).
 - Write operations (`compose_email`, `schedule_meeting`, `respond_to_meeting`,
   `send_chat_message`) are never cached.

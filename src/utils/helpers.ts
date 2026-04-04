@@ -109,6 +109,10 @@ export function normalizeError(err: unknown): { code: string; message: string } 
   if (message.startsWith('MEETING_NOT_RESOLVABLE')) return { code: 'MEETING_NOT_RESOLVABLE', message };
   if (message.startsWith('MISSING_JOIN_WEB_URL')) return { code: 'MISSING_JOIN_WEB_URL', message };
   if (message.startsWith('TRANSCRIPT_NOT_AVAILABLE')) return { code: 'TRANSCRIPT_NOT_AVAILABLE', message };
+  if (message.startsWith('UNSUPPORTED_FILE_TYPE')) return { code: 'UNSUPPORTED_FILE_TYPE', message };
+  if (message.startsWith('PARSE_ERROR')) return { code: 'PARSE_ERROR', message };
+  if (message.startsWith('INVALID_KQL_FIELD')) return { code: 'INVALID_KQL_FIELD', message };
+  if (message.startsWith('INVALID_KQL_FILTER')) return { code: 'INVALID_KQL_FILTER', message };
   if (message.includes('not in allowlist')) return { code: 'FORBIDDEN', message };
   if (message.includes('required')) return { code: 'VALIDATION_ERROR', message };
   if (message.includes('not found')) return { code: 'NOT_FOUND', message };

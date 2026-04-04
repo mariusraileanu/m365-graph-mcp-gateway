@@ -6,6 +6,7 @@ import { graphCache } from '../utils/cache.js';
 import { pickMail } from '../graph/mail.js';
 import { pickEvent, resolveTimezone } from '../graph/calendar.js';
 import { pickFile } from '../graph/files.js';
+import { parseFile, isSupportedForParsing, supportedParseExtensions } from '../parsers/index.js';
 import type { ToolSpec } from '../utils/types.js';
 
 /** Cache TTL for Graph API read results (30 s). */
@@ -13,6 +14,9 @@ const CACHE_TTL_MS = 30_000;
 
 /** Max file size for in-memory buffering (10 MB). */
 const INLINE_MAX_BYTES = 10 * 1024 * 1024;
+
+/** Max file size for parsed mode (50 MB). */
+const PARSED_MAX_BYTES = 50 * 1024 * 1024;
 
 /** MIME prefixes considered text-safe for inline return. */
 const TEXT_MIME_PREFIXES = ['text/', 'application/json', 'application/xml', 'application/javascript'];
@@ -152,16 +156,18 @@ export const getTools: ToolSpec[] = [
     name: 'get_file_content',
     description:
       'Access file content from OneDrive/SharePoint. ' +
-      'Three modes: ' +
+      'Four modes: ' +
       'metadata (default) — returns file info + pre-authenticated download_url (valid ~1 hour), no download; ' +
       'inline — downloads and returns text content inline (text files <=10 MB only); ' +
-      'binary — downloads and returns base64-encoded content (files <=10 MB only). ' +
+      'binary — downloads and returns base64-encoded content (files <=10 MB only); ' +
+      'parsed — downloads and extracts readable text from Office/PDF files (<=50 MB). ' +
+      `Parsed mode supports: ${supportedParseExtensions().join(', ')}. ` +
       'Prefer metadata mode and let the client fetch via download_url to avoid buffering large files.',
     schema: z
       .object({
         drive_id: z.string().min(1),
         item_id: z.string().min(1),
-        mode: z.enum(['metadata', 'inline', 'binary']).default('metadata'),
+        mode: z.enum(['metadata', 'inline', 'binary', 'parsed']).default('metadata'),
         max_chars: z.number().int().positive().max(50000).optional(),
       })
       .strict(),
@@ -189,6 +195,48 @@ export const getTools: ToolSpec[] = [
           mime_type: mimeType,
           size_bytes: fileSize,
           download_url: downloadUrl,
+          web_url: webUrl,
+        });
+      }
+
+      // ── parsed mode: download and extract text from Office/PDF files ──
+      if (mode === 'parsed') {
+        if (!isSupportedForParsing(fileName)) {
+          return fail('UNSUPPORTED_FILE_TYPE', `File '${fileName}' cannot be parsed. Supported: ${supportedParseExtensions().join(', ')}`, {
+            name: fileName,
+            mime_type: mimeType,
+            download_url: downloadUrl,
+            web_url: webUrl,
+          });
+        }
+
+        if (fileSize > PARSED_MAX_BYTES) {
+          return fail(
+            'FILE_TOO_LARGE',
+            `File '${fileName}' is ${fileSize} bytes (limit: ${PARSED_MAX_BYTES} for parsed mode). Use the download_url instead.`,
+            { name: fileName, size_bytes: fileSize, limit_bytes: PARSED_MAX_BYTES, download_url: downloadUrl, web_url: webUrl },
+          );
+        }
+
+        const token = await getAccessToken();
+        const endpoint = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/content`;
+        const dlResp = await fetch(endpoint, { headers: { Authorization: `Bearer ${token}` }, keepalive: true });
+        if (!dlResp.ok) {
+          throw new Error(`UPSTREAM_ERROR: file download failed (${dlResp.status})`);
+        }
+
+        const buffer = Buffer.from(await dlResp.arrayBuffer());
+        const maxChars = typeof params.max_chars === 'number' ? params.max_chars : 50_000;
+        const parsed = await parseFile(buffer, fileName, maxChars);
+
+        return ok(`Parsed: ${fileName}`, {
+          name: parsed.file_name,
+          document_type: parsed.document_type,
+          size_bytes: parsed.size_bytes,
+          content: parsed.content,
+          truncated: parsed.truncated,
+          char_count: parsed.char_count,
+          metadata: parsed.metadata,
           web_url: webUrl,
         });
       }
