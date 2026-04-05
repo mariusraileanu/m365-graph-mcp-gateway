@@ -157,12 +157,12 @@ export const getTools: ToolSpec[] = [
     description:
       'Access file content from OneDrive/SharePoint. ' +
       'Four modes: ' +
-      'metadata (default) — returns file info + pre-authenticated download_url (valid ~1 hour), no download; ' +
-      'inline — downloads and returns text content inline (text files <=10 MB only); ' +
-      'binary — downloads and returns base64-encoded content (files <=10 MB only); ' +
-      'parsed — downloads and extracts readable text from Office/PDF files (<=50 MB). ' +
-      `Parsed mode supports: ${supportedParseExtensions().join(', ')}. ` +
-      'Prefer metadata mode and let the client fetch via download_url to avoid buffering large files.',
+      'parsed — extracts readable text from Office/PDF files (<=50 MB). ' +
+      `USE THIS MODE when the user wants to read, summarise, or analyse file content. Supports: ${supportedParseExtensions().join(', ')}. ` +
+      'metadata — returns file info + pre-authenticated download_url (valid ~1 hour), no content downloaded. ' +
+      'Use when only a link or file properties are needed. ' +
+      'inline — downloads and returns text content inline (plain-text files <=10 MB only). ' +
+      'binary — downloads and returns base64-encoded content (files <=10 MB only).',
     schema: z
       .object({
         drive_id: z.string().min(1),
