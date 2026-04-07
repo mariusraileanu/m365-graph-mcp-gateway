@@ -590,6 +590,12 @@ export async function getAccessToken(): Promise<string> {
         log.warn('Token expired, re-authentication required');
         throw new Error('AUTH_EXPIRED: run --login to re-authenticate');
       }
+      // Conditional Access sign-in frequency or revoked refresh token
+      const errMsg = error instanceof Error ? error.message : String(error);
+      if (errMsg.includes('AADSTS70043') || errMsg.includes('invalid_grant')) {
+        log.warn('Refresh token expired (Conditional Access policy)', { error: errMsg });
+        throw new Error('AUTH_EXPIRED: refresh token expired — re-authenticate with login_device');
+      }
       if (attempt === 0) {
         log.warn('Token refresh failed, retrying', { error: error instanceof Error ? error.message : String(error) });
         await new Promise((r) => setTimeout(r, 500));
@@ -909,8 +915,12 @@ export async function authStatus(): Promise<AuthStatusResult> {
     try {
       await getGraph().api('/me').select('id').get();
       result.graph_reachable = true;
-    } catch {
+    } catch (err) {
       result.graph_reachable = false;
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.startsWith('AUTH_EXPIRED')) {
+        result.error = msg;
+      }
     }
   }
 

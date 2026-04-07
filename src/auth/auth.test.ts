@@ -190,6 +190,24 @@ describe('getAccessToken — retry logic', () => {
     assert.equal(acquireCallCount, 1, 'should NOT retry InteractionRequiredAuthError');
   });
 
+  it('throws AUTH_EXPIRED immediately for AADSTS70043 invalid_grant (no retry)', async () => {
+    acquireTokenResult = [
+      {
+        error: new Error(
+          'invalid_grant: Error(s): 70043 - AADSTS70043: The refresh token has expired or is invalid due to sign-in frequency checks by conditional access.',
+        ),
+      },
+    ];
+    await assert.rejects(() => getAccessToken(), /AUTH_EXPIRED/);
+    assert.equal(acquireCallCount, 1, 'should NOT retry invalid_grant');
+  });
+
+  it('throws AUTH_EXPIRED for plain invalid_grant without AADSTS70043', async () => {
+    acquireTokenResult = [{ error: new Error('invalid_grant: token was revoked') }];
+    await assert.rejects(() => getAccessToken(), /AUTH_EXPIRED/);
+    assert.equal(acquireCallCount, 1, 'should NOT retry invalid_grant');
+  });
+
   it('throws after both attempts fail with transient error', async () => {
     acquireTokenResult = [{ error: new Error('ECONNRESET: first') }, { error: new Error('ECONNRESET: second') }];
     await assert.rejects(() => getAccessToken(), /ECONNRESET: second/);
