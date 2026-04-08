@@ -284,6 +284,92 @@ Errors use a `CODE: message` pattern:
 | `INVALID_KQL_FIELD`          | KQL filter uses an unsupported field name                                  |
 | `INVALID_KQL_FILTER`         | KQL filter_expression has invalid syntax (unbalanced quotes/parens)        |
 
+### Auth Recovery Workflow
+
+When any tool call returns `AUTH_EXPIRED` or `AUTH_REQUIRED`, the client must
+initiate device code re-authentication before retrying. Azure AD Conditional
+Access enforces a 7-day sign-in frequency, so every user will hit token expiry
+on a rolling basis — this is expected, not a bug.
+
+#### 1. Detect the error
+
+Check **both** flags on every `tools/call` response:
+
+```json
+{
+  "result": {
+    "isError": true,
+    "structuredContent": {
+      "error_code": "AUTH_EXPIRED",
+      "message": "AUTH_EXPIRED: refresh token expired — re-authenticate with login_device"
+    }
+  }
+}
+```
+
+Trigger recovery when `result.isError === true` **and**
+`result.structuredContent.error_code` is `"AUTH_EXPIRED"` or `"AUTH_REQUIRED"`.
+
+#### 2. Initiate device code login
+
+```json
+{ "name": "auth", "arguments": { "action": "login_device" } }
+```
+
+Response (immediate, non-blocking):
+
+```json
+{
+  "success": true,
+  "mode": "device",
+  "pending": true,
+  "verification_uri": "https://microsoft.com/devicelogin",
+  "user_code": "ABCD1234",
+  "expires_in": 900,
+  "message": "To sign in, use a web browser to open https://microsoft.com/devicelogin and enter the code ABCD1234 to authenticate."
+}
+```
+
+#### 3. Present the device code to the user
+
+Display `verification_uri` and `user_code` prominently. The user must open the
+URL in a browser and enter the code to complete authentication. The code expires
+after `expires_in` seconds (typically 15 minutes).
+
+#### 4. Poll for completion
+
+```json
+{ "name": "auth", "arguments": { "action": "status" } }
+```
+
+Poll every **5 seconds** until the response shows:
+
+```json
+{
+  "logged_in": true,
+  "graph_reachable": true,
+  "device_code_pending": false
+}
+```
+
+Stop polling and report failure if:
+
+- `expires_in` seconds have elapsed since step 2, or
+- `device_code_pending` becomes `false` while `logged_in` is still `false`
+  (user cancelled or code expired)
+
+#### 5. Retry the original tool call
+
+Once `logged_in: true` and `graph_reachable: true`, re-issue the exact tool call
+that originally returned `AUTH_EXPIRED` / `AUTH_REQUIRED`.
+
+#### Error code reference
+
+| Code            | Meaning                                              | Recovery        |
+| --------------- | ---------------------------------------------------- | --------------- |
+| `AUTH_EXPIRED`  | Had a session but the refresh token expired          | Steps 2–5 above |
+| `AUTH_REQUIRED` | No cached account at all (first run or after logout) | Steps 2–5 above |
+
 ---
 
 ## Write Safety
