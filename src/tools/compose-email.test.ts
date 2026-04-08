@@ -222,7 +222,7 @@ describe('compose_email — reply mode', () => {
     assert.equal(sc.is_draft, true);
   });
 
-  it('sends reply immediately when confirm=true', async () => {
+  it('sends reply immediately when confirm=true (via draft+send)', async () => {
     const result = await callCompose({
       mode: 'reply',
       message_id: 'orig-msg-2',
@@ -231,9 +231,13 @@ describe('compose_email — reply mode', () => {
     });
 
     assert.ok(!('isError' in result));
+    // Should create a draft first to preserve quoted original
+    assert.equal(createReplyDraftCalls.length, 1);
+    assert.equal(createReplyDraftCalls[0]!.messageId, 'orig-msg-2');
+    assert.equal(createReplyDraftCalls[0]!.replyAll, false);
+    // Then send the draft
     assert.equal(graphPostCalls.length, 1);
-    assert.ok(graphPostCalls[0]!.endpoint.includes('/me/messages/orig-msg-2/reply'));
-    assert.ok(!graphPostCalls[0]!.endpoint.includes('replyAll'));
+    assert.ok(graphPostCalls[0]!.endpoint.includes('/me/messages/draft-reply-1/send'));
     const sc = result.structuredContent as Record<string, unknown>;
     assert.equal(sc.mode, 'send');
   });
@@ -246,7 +250,7 @@ describe('compose_email — reply mode', () => {
 describe('compose_email — reply_all mode', () => {
   beforeEach(() => resetTracking());
 
-  it('sends reply-all when confirm=true', async () => {
+  it('sends reply-all when confirm=true (via draft+send)', async () => {
     const result = await callCompose({
       mode: 'reply_all',
       message_id: 'orig-msg-3',
@@ -255,8 +259,13 @@ describe('compose_email — reply_all mode', () => {
     });
 
     assert.ok(!('isError' in result));
+    // Should create a reply-all draft first
+    assert.equal(createReplyDraftCalls.length, 1);
+    assert.equal(createReplyDraftCalls[0]!.messageId, 'orig-msg-3');
+    assert.equal(createReplyDraftCalls[0]!.replyAll, true);
+    // Then send the draft
     assert.equal(graphPostCalls.length, 1);
-    assert.ok(graphPostCalls[0]!.endpoint.includes('/me/messages/orig-msg-3/replyAll'));
+    assert.ok(graphPostCalls[0]!.endpoint.includes('/me/messages/draft-reply-1/send'));
     const sc = result.structuredContent as Record<string, unknown>;
     assert.equal(sc.mode, 'send');
   });

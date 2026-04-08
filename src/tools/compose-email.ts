@@ -52,16 +52,16 @@ export const composeEmailTools: ToolSpec[] = [
         const messageId = String(params.message_id || '').trim();
         if (!messageId) throw new Error('VALIDATION_ERROR: message_id is required for reply/reply_all');
 
+        // Both confirm and draft paths start by creating a reply draft.
+        // Graph's /reply endpoint with message.body replaces the original
+        // quoted content, so we always go through createReplyDraft which
+        // properly merges the new body with the quoted original.
+        const draft = await createReplyDraft(messageId, bodyHtml, mode === 'reply_all');
+
         if (params.confirm === true) {
-          const endpoint =
-            mode === 'reply_all'
-              ? `/me/messages/${encodeURIComponent(messageId)}/replyAll`
-              : `/me/messages/${encodeURIComponent(messageId)}/reply`;
           await getGraph()
-            .api(endpoint)
-            .post({
-              message: { body: { contentType: 'HTML', content: bodyHtml } },
-            });
+            .api(`/me/messages/${encodeURIComponent(draft.id)}/send`)
+            .post({});
           await auditLogger.log({
             action: `compose_email_${mode}_send`,
             user: (await currentUser()) || 'unknown',
@@ -71,7 +71,6 @@ export const composeEmailTools: ToolSpec[] = [
           return ok(`${mode === 'reply_all' ? 'Reply-all' : 'Reply'} sent.`, { success: true, message_id: messageId, mode: 'send' });
         }
 
-        const draft = await createReplyDraft(messageId, bodyHtml, mode === 'reply_all');
         await auditLogger.log({
           action: `compose_email_${mode}_draft`,
           user: (await currentUser()) || 'unknown',
