@@ -163,6 +163,24 @@ describe('schedule_meeting — explicit start/end', () => {
     assert.equal(auditLogCalls[0]!.action, 'schedule_meeting');
   });
 
+  it('creates event in shared mailbox when mailbox_user is provided', async () => {
+    graphPostHandler = () => ({ id: 'evt-shared-1', subject: 'Shared Standup' });
+
+    const result = await callSchedule({
+      subject: 'Shared Standup',
+      start: '2026-03-25T09:00:00+00:00',
+      end: '2026-03-25T09:30:00+00:00',
+      mailbox_user: 'shared@example.com',
+      confirm: true,
+    });
+
+    assert.ok(!('isError' in result));
+    assert.equal(graphPostCalls.length, 1);
+    assert.ok(graphPostCalls[0]!.endpoint.includes('/users/shared%40example.com/events'));
+    const sc = result.structuredContent as Record<string, unknown>;
+    assert.equal(sc.mailbox_user, 'shared@example.com');
+  });
+
   it('passes Teams meeting flags when teams_meeting=true', async () => {
     graphPostHandler = () => ({ id: 'evt-teams', subject: 'Teams Call' });
 
@@ -219,6 +237,31 @@ describe('schedule_meeting — preferred window (auto free-slot)', () => {
     const eventBody = graphPostCalls[1]!.body as Record<string, unknown>;
     const start = eventBody.start as { dateTime: string };
     assert.ok(start.dateTime.includes('T10:00:00'), `expected 10:00 start, got ${start.dateTime}`);
+  });
+
+  it('uses shared mailbox for getSchedule and event create when mailbox_user is provided', async () => {
+    graphPostHandler = (endpoint: string) => {
+      if (endpoint.includes('getSchedule')) {
+        return { value: [{ scheduleItems: [] }] };
+      }
+      return { id: 'evt-auto-shared', subject: 'Auto Shared' };
+    };
+
+    const result = await callSchedule({
+      subject: 'Auto Shared',
+      preferred_start: '2026-03-25T09:00:00Z',
+      preferred_end: '2026-03-25T10:00:00Z',
+      duration_minutes: 30,
+      mailbox_user: 'shared@example.com',
+      confirm: true,
+    });
+
+    assert.ok(!('isError' in result));
+    assert.equal(graphPostCalls.length, 2);
+    assert.ok(graphPostCalls[0]!.endpoint.includes('/users/shared%40example.com/calendar/getSchedule'));
+    assert.ok(graphPostCalls[1]!.endpoint.includes('/users/shared%40example.com/events'));
+    const scheduleBody = graphPostCalls[0]!.body as { schedules: string[] };
+    assert.equal(scheduleBody.schedules[0], 'shared@example.com');
   });
 
   it('returns no-free-slot when window is fully busy', async () => {

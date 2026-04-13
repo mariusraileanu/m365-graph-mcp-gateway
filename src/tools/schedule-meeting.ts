@@ -1,6 +1,15 @@
 import { z } from 'zod';
 import { isLoggedIn, currentUser, getGraph } from '../auth/index.js';
-import { ok, requireConfirm, sanitizeForLogs, escapeHtml, sanitizeEmailHtml, checkEmailAllowed } from '../utils/helpers.js';
+import {
+  ok,
+  requireConfirm,
+  sanitizeForLogs,
+  escapeHtml,
+  sanitizeEmailHtml,
+  checkEmailAllowed,
+  graphMailboxPath,
+  normalizeMailboxUser,
+} from '../utils/helpers.js';
 import { auditLogger } from '../utils/audit.js';
 import { pickEvent, resolveTimezone } from '../graph/calendar.js';
 import type { ToolSpec } from '../utils/types.js';
@@ -9,7 +18,8 @@ export const scheduleMeetingTools: ToolSpec[] = [
   {
     name: 'schedule_meeting',
     description:
-      'Schedule a meeting. Provide explicit start/end, or provide preferred_start/preferred_end + duration_minutes to auto-find a free slot. Supports Teams meetings and agendas. Requires confirm=true.',
+      'Schedule a meeting. Provide explicit start/end, or provide preferred_start/preferred_end + duration_minutes to auto-find a free slot. ' +
+      'Supports Teams meetings and agendas. Optional mailbox_user targets a shared calendar. Requires confirm=true.',
     schema: z
       .object({
         subject: z.string().min(1),
@@ -24,10 +34,12 @@ export const scheduleMeetingTools: ToolSpec[] = [
         teams_meeting: z.boolean().optional(),
         body_html: z.string().optional(),
         confirm: z.boolean().optional(),
+        mailbox_user: z.string().min(1).optional(),
       })
       .strict(),
     run: async (params) => {
       if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
+      const mailboxUser = normalizeMailboxUser(params.mailbox_user);
 
       const attendees = Array.isArray(params.attendees) ? params.attendees.map((x) => String(x)) : [];
       for (const attendee of attendees) {
@@ -48,9 +60,9 @@ export const scheduleMeetingTools: ToolSpec[] = [
       } else if (params.preferred_start && params.preferred_end) {
         // Auto-find a free slot
         const schedule = await getGraph()
-          .api('/me/calendar/getSchedule')
+          .api(graphMailboxPath('/calendar/getSchedule', mailboxUser))
           .post({
-            schedules: [(await currentUser()) || ''],
+            schedules: [mailboxUser || (await currentUser()) || ''],
             startTime: { dateTime: String(params.preferred_start), timeZone: tz },
             endTime: { dateTime: String(params.preferred_end), timeZone: tz },
             availabilityViewInterval: 30,
@@ -112,7 +124,7 @@ export const scheduleMeetingTools: ToolSpec[] = [
             : undefined;
 
       const event = await getGraph()
-        .api('/me/events')
+        .api(graphMailboxPath('/events', mailboxUser))
         .post({
           subject: String(params.subject),
           start: { dateTime: meetingStart, timeZone: tz },
@@ -132,10 +144,14 @@ export const scheduleMeetingTools: ToolSpec[] = [
           start: meetingStart,
           teams_meeting: teamsMeeting,
           has_agenda: Boolean(agenda || bodyHtml),
+          ...(mailboxUser ? { mailbox_user: mailboxUser } : {}),
         },
         status: 'success',
       });
-      return ok('Meeting scheduled.', pickEvent(event as Record<string, unknown>, false));
+      return ok('Meeting scheduled.', {
+        ...(mailboxUser ? { mailbox_user: mailboxUser } : {}),
+        ...pickEvent(event as Record<string, unknown>, false),
+      });
     },
   },
 ];

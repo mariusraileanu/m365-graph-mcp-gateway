@@ -233,6 +233,15 @@ describe('get_email', () => {
     loggedIn = false;
     await assert.rejects(() => callGetEmail({ message_id: 'msg-1' }), /AUTH_REQUIRED/);
   });
+
+  it('targets shared mailbox when mailbox_user is provided', async () => {
+    graphGetResponse = { id: 'msg-shared-1', subject: 'Shared Hello' };
+    const result = await callGetEmail({ message_id: 'msg-shared-1', mailbox_user: 'shared@example.com' });
+
+    assert.ok(!('isError' in result));
+    assert.equal(graphGetCalls.length, 1);
+    assert.ok(graphGetCalls[0]!.endpoint.includes('/users/shared%40example.com/messages/msg-shared-1'));
+  });
 });
 
 describe('get_event', () => {
@@ -262,6 +271,15 @@ describe('get_event', () => {
   it('throws AUTH_REQUIRED when not logged in', async () => {
     loggedIn = false;
     await assert.rejects(() => callGetEvent({ event_id: 'evt-1' }), /AUTH_REQUIRED/);
+  });
+
+  it('targets shared calendar when mailbox_user is provided', async () => {
+    graphGetResponse = { id: 'evt-shared-1', subject: 'Shared Meeting' };
+    const result = await callGetEvent({ event_id: 'evt-shared-1', mailbox_user: 'shared@example.com' });
+
+    assert.ok(!('isError' in result));
+    assert.equal(graphGetCalls.length, 1);
+    assert.ok(graphGetCalls[0]!.endpoint.includes('/users/shared%40example.com/events/evt-shared-1'));
   });
 });
 
@@ -353,6 +371,23 @@ describe('get_email_thread — with message_id', () => {
   it('throws NOT_FOUND when message has no conversationId', async () => {
     graphGetResponse = { conversationId: '' };
     await assert.rejects(() => callGetEmailThread({ message_id: 'msg-no-conv' }), /NOT_FOUND/);
+  });
+
+  it('uses mailbox_user for message lookup and thread fetch', async () => {
+    let callCount = 0;
+    graphGetResponse = () => {
+      callCount++;
+      if (callCount === 1) return { conversationId: 'conv-shared' };
+      return { value: [{ id: 'msg-1', subject: 'Shared thread' }] };
+    };
+
+    const result = await callGetEmailThread({ message_id: 'msg-origin', mailbox_user: 'shared@example.com' });
+    assert.ok(!('isError' in result));
+    assert.equal(graphGetCalls.length, 2);
+    assert.ok(graphGetCalls[0]!.endpoint.includes('/users/shared%40example.com/messages/msg-origin'));
+    assert.ok(graphGetCalls[1]!.endpoint.includes('/users/shared%40example.com/messages'));
+    const structured = result.structuredContent as Record<string, unknown>;
+    assert.equal(structured.mailbox_user, 'shared@example.com');
   });
 });
 
@@ -627,9 +662,9 @@ describe('get_email — cache', () => {
     await callGetEmail({ message_id: 'msg-c1' });
 
     assert.equal(cacheGetCalls.length, 1);
-    assert.equal(cacheGetCalls[0]!.key, 'email:msg-c1');
+    assert.equal(cacheGetCalls[0]!.key, 'email:me:msg-c1');
     assert.equal(cacheSetCalls.length, 1);
-    assert.equal(cacheSetCalls[0]!.key, 'email:msg-c1');
+    assert.equal(cacheSetCalls[0]!.key, 'email:me:msg-c1');
     assert.equal(graphGetCalls.length, 1, 'should call Graph API on miss');
   });
 
@@ -647,6 +682,17 @@ describe('get_email — cache', () => {
     assert.equal(graphGetCalls.length, 0, 'should NOT call Graph API on cache hit');
     assert.equal(cacheSetCalls.length, 0, 'should NOT set cache on hit');
   });
+
+  it('uses distinct cache keys for different mailbox_user values', async () => {
+    graphGetResponse = { id: 'msg-shared-cache', subject: 'Shared Cache' };
+    await callGetEmail({ message_id: 'msg-shared-cache', mailbox_user: 'shared@example.com' });
+    assert.equal(cacheSetCalls[0]!.key, 'email:shared@example.com:msg-shared-cache');
+
+    resetTracking();
+    graphGetResponse = { id: 'msg-shared-cache', subject: 'Own Cache' };
+    await callGetEmail({ message_id: 'msg-shared-cache' });
+    assert.equal(cacheSetCalls[0]!.key, 'email:me:msg-shared-cache');
+  });
 });
 
 describe('get_event — cache', () => {
@@ -657,7 +703,7 @@ describe('get_event — cache', () => {
     await callGetEvent({ event_id: 'evt-c1' });
 
     assert.equal(cacheSetCalls.length, 1);
-    assert.equal(cacheSetCalls[0]!.key, 'event:evt-c1');
+    assert.equal(cacheSetCalls[0]!.key, 'event:me:evt-c1');
     assert.equal(graphGetCalls.length, 1);
   });
 
@@ -684,7 +730,7 @@ describe('get_email_thread — cache', () => {
 
     // Cache key includes conversationId + include_full + top
     assert.equal(cacheSetCalls.length, 1);
-    assert.ok(cacheSetCalls[0]!.key.startsWith('thread:conv-c1:'));
+    assert.ok(cacheSetCalls[0]!.key.startsWith('thread:me:conv-c1:'));
     assert.equal(graphGetCalls.length, 1);
   });
 

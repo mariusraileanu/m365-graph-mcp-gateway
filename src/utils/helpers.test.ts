@@ -12,6 +12,8 @@ import {
   escapeHtml,
   sanitizeEmailHtml,
   escapeODataString,
+  normalizeMailboxUser,
+  graphMailboxPath,
 } from './helpers.js';
 
 describe('requireUserSlug', () => {
@@ -220,5 +222,32 @@ describe('escapeODataString', () => {
 
   it('does not alter double quotes or other characters', () => {
     assert.equal(escapeODataString('hello "world" <>&'), 'hello "world" <>&');
+  });
+});
+
+describe('normalizeMailboxUser', () => {
+  it('returns null for undefined/null/blank', () => {
+    assert.equal(normalizeMailboxUser(undefined), null);
+    assert.equal(normalizeMailboxUser(null), null);
+    assert.equal(normalizeMailboxUser('   '), null);
+  });
+
+  it('returns trimmed mailbox user for valid input', () => {
+    assert.equal(normalizeMailboxUser(' shared@example.com '), 'shared@example.com');
+  });
+
+  it('throws VALIDATION_ERROR for whitespace or path-like values', () => {
+    assert.throws(() => normalizeMailboxUser('bad user@example.com'), /VALIDATION_ERROR/);
+    assert.throws(() => normalizeMailboxUser('user@example.com/path'), /VALIDATION_ERROR/);
+  });
+});
+
+describe('graphMailboxPath', () => {
+  it('uses /me when mailbox_user is absent', () => {
+    assert.equal(graphMailboxPath('/messages', undefined), '/me/messages');
+  });
+
+  it('uses /users/{mailbox_user} when provided', () => {
+    assert.equal(graphMailboxPath('/messages', 'shared@example.com'), '/users/shared%40example.com/messages');
   });
 });

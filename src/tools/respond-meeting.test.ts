@@ -152,6 +152,19 @@ describe('respond_to_meeting — RSVP', () => {
     assert.equal(sc.action, 'accept');
   });
 
+  it('targets shared calendar for RSVP when mailbox_user is provided', async () => {
+    const result = await callRespond({
+      event_id: 'evt-1',
+      action: 'accept',
+      mailbox_user: 'shared@example.com',
+      confirm: true,
+    });
+
+    assert.ok(!('isError' in result));
+    assert.equal(graphPostCalls.length, 1);
+    assert.ok(graphPostCalls[0]!.endpoint.includes('/users/shared%40example.com/events/evt-1/accept'));
+  });
+
   it('sends decline when confirm=true', async () => {
     const result = await callRespond({ event_id: 'evt-2', action: 'decline', confirm: true });
 
@@ -196,6 +209,14 @@ describe('respond_to_meeting — cancel', () => {
     assert.ok(graphPostCalls[0]!.endpoint.includes('/me/events/evt-5/cancel'));
     const sc = result.structuredContent as Record<string, unknown>;
     assert.equal(sc.success, true);
+  });
+
+  it('targets shared calendar for cancel when mailbox_user is provided', async () => {
+    const result = await callRespond({ event_id: 'evt-5', action: 'cancel', mailbox_user: 'shared@example.com', confirm: true });
+
+    assert.ok(!('isError' in result));
+    assert.equal(graphPostCalls.length, 1);
+    assert.ok(graphPostCalls[0]!.endpoint.includes('/users/shared%40example.com/events/evt-5/cancel'));
   });
 
   it('passes comment to cancel POST body', async () => {
@@ -246,6 +267,36 @@ describe('respond_to_meeting — reply_all_draft', () => {
     // Verify audit
     assert.equal(auditLogCalls.length, 1);
     assert.equal(auditLogCalls[0]!.action, 'respond_to_meeting_reply_all_draft');
+  });
+
+  it('uses shared mailbox endpoints for reply_all_draft when mailbox_user is provided', async () => {
+    graphGetHandler = (endpoint: string) => {
+      if (endpoint.includes('/users/shared%40example.com/events/evt-10')) {
+        return {
+          id: 'evt-10',
+          subject: 'Team Sync',
+          organizer: { emailAddress: { address: 'org@example.com', name: 'Organizer' } },
+        };
+      }
+      if (endpoint.includes('/users/shared%40example.com/messages')) {
+        return { value: [{ id: 'msg-invite-shared', subject: 'Team Sync' }] };
+      }
+      return {};
+    };
+
+    graphPostHandler = (endpoint: string) => {
+      if (endpoint.includes('/users/shared%40example.com/messages/msg-invite-shared/createReplyAll')) {
+        return { id: 'draft-ra-shared' };
+      }
+      return {};
+    };
+
+    const result = await callRespond({ event_id: 'evt-10', action: 'reply_all_draft', mailbox_user: 'shared@example.com' });
+    assert.ok(!('isError' in result));
+    assert.equal(graphGetCalls.length >= 2, true);
+    assert.equal(graphPostCalls.length >= 1, true);
+    const sc = result.structuredContent as Record<string, unknown>;
+    assert.equal(sc.mailbox_user, 'shared@example.com');
   });
 
   it('patches body_html into the reply-all draft', async () => {

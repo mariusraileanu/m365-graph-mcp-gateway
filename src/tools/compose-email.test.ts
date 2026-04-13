@@ -187,6 +187,21 @@ describe('compose_email — send mode', () => {
     assert.equal(auditLogCalls[0]!.action, 'compose_email_send');
   });
 
+  it('sends from shared mailbox when mailbox_user is provided', async () => {
+    const result = await callCompose({
+      mode: 'send',
+      to: 'alice@example.com',
+      subject: 'Shared Send',
+      body_html: '<p>Hello from shared</p>',
+      mailbox_user: 'shared@example.com',
+      confirm: true,
+    });
+
+    assert.ok(!('isError' in result));
+    assert.equal(graphPostCalls.length, 1);
+    assert.ok(graphPostCalls[0]!.endpoint.includes('/users/shared%40example.com/sendMail'));
+  });
+
   it('throws FORBIDDEN when domain is not in allowlist', async () => {
     allowDomains = ['example.com'];
     await assert.rejects(
@@ -238,6 +253,23 @@ describe('compose_email — reply mode', () => {
     // Then send the draft
     assert.equal(graphPostCalls.length, 1);
     assert.ok(graphPostCalls[0]!.endpoint.includes('/me/messages/draft-reply-1/send'));
+    const sc = result.structuredContent as Record<string, unknown>;
+    assert.equal(sc.mode, 'send');
+  });
+
+  it('creates/sends reply in shared mailbox when mailbox_user is provided', async () => {
+    const result = await callCompose({
+      mode: 'reply',
+      message_id: 'orig-shared-2',
+      body_html: '<p>Noted shared</p>',
+      mailbox_user: 'shared@example.com',
+      confirm: true,
+    });
+
+    assert.ok(!('isError' in result));
+    assert.equal(createReplyDraftCalls.length, 1);
+    assert.equal(graphPostCalls.length, 1);
+    assert.ok(graphPostCalls[0]!.endpoint.includes('/users/shared%40example.com/messages/draft-reply-1/send'));
     const sc = result.structuredContent as Record<string, unknown>;
     assert.equal(sc.mode, 'send');
   });

@@ -18,9 +18,9 @@ const searchFilesImpl = mock.fn(async (query: string, top: number, mode: string,
 });
 
 /** Tracks calls to calendarView for assertion. */
-const calendarViewCalls: Array<{ startDate: string; endDate: string; top: number; timezone?: string }> = [];
-const calendarViewImpl = mock.fn(async (startDate: string, endDate: string, top: number, timezone?: string) => {
-  calendarViewCalls.push({ startDate, endDate, top, timezone });
+const calendarViewCalls: Array<{ startDate: string; endDate: string; top: number; timezone?: string; mailboxUser?: string }> = [];
+const calendarViewImpl = mock.fn(async (startDate: string, endDate: string, top: number, timezone?: string, mailboxUser?: string) => {
+  calendarViewCalls.push({ startDate, endDate, top, timezone, mailboxUser });
   return [
     {
       id: 'event-cv-1',
@@ -209,6 +209,18 @@ describe('find tool — entity type filtering', () => {
     assert.equal(graphGetCalls.length, 1, 'one /me/messages get call');
   });
 
+  it('mail-only with mailbox_user targets /users/{mailbox_user}/messages', async () => {
+    await callFind({
+      query: 'test',
+      entity_types: ['mail'],
+      top: 3,
+      mailbox_user: 'shared@example.com',
+    });
+
+    assert.equal(graphGetCalls.length, 1);
+    assert.ok(graphGetCalls[0]!.endpoint.includes('/users/shared%40example.com/messages'));
+  });
+
   it('files-only does not call mail or event search', async () => {
     await callFind({ query: 'test', entity_types: ['files'], top: 3 });
 
@@ -237,6 +249,22 @@ describe('find tool — event search routing', () => {
     assert.ok((sc.providers as string[]).includes('calendar-view'), 'provider should be calendar-view');
   });
 
+  it('date-range with mailbox_user passes mailbox to calendarView', async () => {
+    const result = await callFind({
+      query: 'meetings',
+      entity_types: ['events'],
+      start_date: '2026-03-23T00:00:00',
+      end_date: '2026-03-24T00:00:00',
+      mailbox_user: 'shared@example.com',
+      top: 5,
+    });
+
+    const sc = result.structuredContent as Record<string, unknown>;
+    assert.equal(sc.mailbox_user, 'shared@example.com');
+    assert.equal(calendarViewCalls.length, 1);
+    assert.equal(calendarViewCalls[0]!.mailboxUser, 'shared@example.com');
+  });
+
   it('no dates triggers text-search events, not calendarView', async () => {
     const result = await callFind({
       query: 'meetings',
@@ -248,6 +276,18 @@ describe('find tool — event search routing', () => {
     assert.equal(calendarViewCalls.length, 0, 'calendarView should not be called');
     assert.equal(graphSearchCalls.length, 1, 'one /search/query call for events');
     assert.ok((sc.providers as string[]).includes('graph-search'), 'provider should be graph-search');
+  });
+
+  it('mailbox_user without start/end for events throws VALIDATION_ERROR', async () => {
+    await assert.rejects(
+      () =>
+        callFind({
+          query: 'meetings',
+          entity_types: ['events'],
+          mailbox_user: 'shared@example.com',
+        }),
+      /VALIDATION_ERROR.*mailbox_user requires start_date and end_date/,
+    );
   });
 });
 

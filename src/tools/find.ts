@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { loadConfig } from '../config/index.js';
-import { ok, compactText, normalizeTop } from '../utils/helpers.js';
+import { ok, compactText, normalizeTop, graphMailboxPath, normalizeMailboxUser } from '../utils/helpers.js';
 import { getGraph } from '../auth/index.js';
 import { searchFiles } from '../graph/files.js';
 import { calendarView } from '../graph/calendar.js';
@@ -9,10 +9,10 @@ import type { ToolSpec } from '../utils/types.js';
 
 type EntityType = 'mail' | 'files' | 'events';
 
-/** Search mail via Graph /me/messages?$search */
-async function searchMail(query: string, top: number): Promise<Record<string, unknown>[]> {
+/** Search mail via Graph /me/messages or /users/{mailbox_user}/messages */
+async function searchMail(query: string, top: number, mailboxUser?: string | null): Promise<Record<string, unknown>[]> {
   const messages = await getGraph()
-    .api('/me/messages')
+    .api(graphMailboxPath('/messages', mailboxUser))
     .header('ConsistencyLevel', 'eventual')
     .search(`"${query.replace(/"/g, '')}"`)
     .select('id,subject,from,receivedDateTime,bodyPreview')
@@ -57,8 +57,14 @@ async function searchEvents(query: string, top: number): Promise<Record<string, 
 }
 
 /** Fetch events in a date range via CalendarView API (expands recurring events, includes attendees). */
-async function listEvents(startDate: string, endDate: string, top: number, timezone?: string): Promise<Record<string, unknown>[]> {
-  const events = await calendarView(startDate, endDate, top, timezone);
+async function listEvents(
+  startDate: string,
+  endDate: string,
+  top: number,
+  timezone?: string,
+  mailboxUser?: string | null,
+): Promise<Record<string, unknown>[]> {
+  const events = await calendarView(startDate, endDate, top, timezone, mailboxUser || undefined);
   return events.map((e) => ({ type: 'event', ...e }));
 }
 
@@ -69,6 +75,8 @@ export const findTools: ToolSpec[] = [
       'Search across Microsoft 365 — mail, files, and calendar events. ' +
       'For calendar events: provide start_date and end_date (ISO 8601) to list all events in a date range ' +
       '(includes organizer, attendees, location). Resolve relative dates like "Monday" or "next week" to concrete ISO dates before calling. ' +
+      'Optional mailbox_user targets a shared mailbox/calendar (UPN/email/object-id) via /users/{mailbox_user}. ' +
+      'When mailbox_user is set for events, start_date and end_date are required. ' +
       'Without date params, falls back to text-based search. ' +
       'Uses Graph Search API. Pass kql to override query with a raw KQL expression.',
     schema: z
@@ -78,6 +86,7 @@ export const findTools: ToolSpec[] = [
         entity_types: z.array(z.enum(['mail', 'files', 'events'])).optional(),
         start_date: z.string().optional(),
         end_date: z.string().optional(),
+        mailbox_user: z.string().min(1).optional(),
         top: z.number().int().positive().max(50).optional(),
         max_chars: z.number().int().positive().max(50000).optional(),
       })
@@ -94,6 +103,7 @@ export const findTools: ToolSpec[] = [
         : ['mail', 'files', 'events'];
       const startDate = typeof params.start_date === 'string' ? params.start_date.trim() : '';
       const endDate = typeof params.end_date === 'string' ? params.end_date.trim() : '';
+      const mailboxUser = normalizeMailboxUser(params.mailbox_user);
       const top = normalizeTop(params.top);
       const maxChars = Number.parseInt(String(params.max_chars || loadConfig().output.defaultMaxChars), 10);
 
@@ -101,6 +111,7 @@ export const findTools: ToolSpec[] = [
 
       // Run searches in parallel for requested entity types
       const searches: Promise<{ type: string; provider: string; results: Record<string, unknown>[] }>[] = [];
+      const preValidationErrors: string[] = [];
 
       if (entityTypes.includes('files')) {
         searches.push(
@@ -112,22 +123,34 @@ export const findTools: ToolSpec[] = [
         );
       }
       if (entityTypes.includes('mail')) {
-        searches.push(searchMail(queryString, top).then((results) => ({ type: 'mail', provider: 'graph-search', results })));
+        searches.push(searchMail(queryString, top, mailboxUser).then((results) => ({ type: 'mail', provider: 'graph-search', results })));
       }
       if (entityTypes.includes('events')) {
         if (startDate && endDate) {
           // Date range provided: use CalendarView API for precise results with full attendee data
-          searches.push(listEvents(startDate, endDate, top).then((results) => ({ type: 'events', provider: 'calendar-view', results })));
+          searches.push(
+            listEvents(startDate, endDate, top, undefined, mailboxUser).then((results) => ({
+              type: 'events',
+              provider: 'calendar-view',
+              results,
+            })),
+          );
         } else {
-          // No date range: fall back to text-based search
-          searches.push(searchEvents(queryString, top).then((results) => ({ type: 'events', provider: 'graph-search', results })));
+          if (mailboxUser) {
+            const message = 'VALIDATION_ERROR: mailbox_user requires start_date and end_date for event search';
+            if (entityTypes.length === 1) throw new Error(message);
+            preValidationErrors.push(message);
+          } else {
+            // No date range: fall back to text-based search
+            searches.push(searchEvents(queryString, top).then((results) => ({ type: 'events', provider: 'graph-search', results })));
+          }
         }
       }
 
       const searchResults = await Promise.allSettled(searches);
       const allResults: Record<string, unknown>[] = [];
       const providers: string[] = [];
-      const errors: string[] = [];
+      const errors: string[] = [...preValidationErrors];
 
       for (const result of searchResults) {
         if (result.status === 'fulfilled') {
@@ -163,6 +186,7 @@ export const findTools: ToolSpec[] = [
         entity_types: entityTypes,
         ...(startDate ? { start_date: startDate } : {}),
         ...(endDate ? { end_date: endDate } : {}),
+        ...(mailboxUser ? { mailbox_user: mailboxUser } : {}),
         ...(hasEvents ? { timezone: loadConfig().calendar.defaultTimezone } : {}),
         top,
         elapsed_ms: Date.now() - t0,

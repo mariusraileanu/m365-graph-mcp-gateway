@@ -1,6 +1,6 @@
 import { loadConfig } from '../config/index.js';
 import { getGraph, getAccessToken } from '../auth/index.js';
-import { compactText, stripHtml } from '../utils/helpers.js';
+import { compactText, stripHtml, graphMailboxPath } from '../utils/helpers.js';
 import type { GraphFileAttachment } from '../utils/types.js';
 
 export function pickMail(message: Record<string, unknown>, includeFullPayload: boolean): Record<string, unknown> {
@@ -126,22 +126,24 @@ export async function createReplyDraft(
   messageId: string,
   bodyHtml: string,
   replyAll: boolean,
+  mailboxUser?: string,
 ): Promise<{ id: string; source_message_id: string; is_draft: true }> {
-  const endpoint = replyAll
-    ? `/me/messages/${encodeURIComponent(messageId)}/createReplyAll`
-    : `/me/messages/${encodeURIComponent(messageId)}/createReply`;
+  const endpoint = graphMailboxPath(
+    replyAll ? `/messages/${encodeURIComponent(messageId)}/createReplyAll` : `/messages/${encodeURIComponent(messageId)}/createReply`,
+    mailboxUser,
+  );
   const created = await getGraph().api(endpoint).post({});
   const draftId = String(created?.id || '').trim();
   if (!draftId) throw new Error('UPSTREAM_ERROR: failed to create reply draft');
 
   if (bodyHtml.trim()) {
     const current = await getGraph()
-      .api(`/me/messages/${encodeURIComponent(draftId)}`)
+      .api(graphMailboxPath(`/messages/${encodeURIComponent(draftId)}`, mailboxUser))
       .select('body')
       .get();
     const merged = `${bodyHtml}<br><br>${String(current?.body?.content || '')}`;
     await getGraph()
-      .api(`/me/messages/${encodeURIComponent(draftId)}`)
+      .api(graphMailboxPath(`/messages/${encodeURIComponent(draftId)}`, mailboxUser))
       .patch({
         body: { contentType: 'HTML', content: merged },
       });

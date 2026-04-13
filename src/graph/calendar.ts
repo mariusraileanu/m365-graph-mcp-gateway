@@ -1,5 +1,6 @@
 import { getGraph } from '../auth/index.js';
 import { loadConfig } from '../config/index.js';
+import { graphMailboxPath } from '../utils/helpers.js';
 
 /** Map common IANA timezone identifiers to Windows timezone names used by Microsoft Graph. */
 const IANA_TO_WINDOWS: Record<string, string> = {
@@ -163,12 +164,13 @@ export async function calendarView(
   endDateTime: string,
   top: number,
   timezone?: string,
+  mailboxUser?: string,
 ): Promise<Record<string, unknown>[]> {
   const windowsTz = resolveTimezone(timezone);
   const utcStart = localToUtc(startDateTime, timezone);
   const utcEnd = localToUtc(endDateTime, timezone);
   const response = await getGraph()
-    .api('/me/calendarView')
+    .api(graphMailboxPath('/calendarView', mailboxUser))
     .header('Prefer', `outlook.timezone="${windowsTz}"`)
     .query({ startDateTime: utcStart, endDateTime: utcEnd })
     .select(CALENDAR_VIEW_SELECT)

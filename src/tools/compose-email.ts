@@ -1,6 +1,15 @@
 import { z } from 'zod';
 import { isLoggedIn, currentUser, getGraph } from '../auth/index.js';
-import { ok, checkEmailAllowed, parseRecipients, requireConfirm, sanitizeForLogs, sanitizeEmailHtml } from '../utils/helpers.js';
+import {
+  ok,
+  checkEmailAllowed,
+  parseRecipients,
+  requireConfirm,
+  sanitizeForLogs,
+  sanitizeEmailHtml,
+  graphMailboxPath,
+  normalizeMailboxUser,
+} from '../utils/helpers.js';
 import { auditLogger } from '../utils/audit.js';
 import { buildMailAttachments, createReplyDraft } from '../graph/mail.js';
 import type { ToolSpec } from '../utils/types.js';
@@ -9,7 +18,8 @@ export const composeEmailTools: ToolSpec[] = [
   {
     name: 'compose_email',
     description:
-      'Compose an email: draft, send, reply, or reply-all. For replies, provide message_id. Write operations require confirm=true.',
+      'Compose an email: draft, send, reply, or reply-all. For replies, provide message_id. ' +
+      'Optional mailbox_user targets a shared mailbox. Write operations require confirm=true.',
     schema: z
       .object({
         mode: z.enum(['draft', 'send', 'reply', 'reply_all']),
@@ -40,12 +50,14 @@ export const composeEmailTools: ToolSpec[] = [
           )
           .optional(),
         confirm: z.boolean().optional(),
+        mailbox_user: z.string().min(1).optional(),
       })
       .strict(),
     run: async (params) => {
       if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
       const mode = String(params.mode) as 'draft' | 'send' | 'reply' | 'reply_all';
       const bodyHtml = sanitizeEmailHtml(String(params.body_html));
+      const mailboxUser = normalizeMailboxUser(params.mailbox_user);
 
       // Reply modes
       if (mode === 'reply' || mode === 'reply_all') {
@@ -56,16 +68,16 @@ export const composeEmailTools: ToolSpec[] = [
         // Graph's /reply endpoint with message.body replaces the original
         // quoted content, so we always go through createReplyDraft which
         // properly merges the new body with the quoted original.
-        const draft = await createReplyDraft(messageId, bodyHtml, mode === 'reply_all');
+        const draft = await createReplyDraft(messageId, bodyHtml, mode === 'reply_all', mailboxUser || undefined);
 
         if (params.confirm === true) {
           await getGraph()
-            .api(`/me/messages/${encodeURIComponent(draft.id)}/send`)
+            .api(graphMailboxPath(`/messages/${encodeURIComponent(draft.id)}/send`, mailboxUser))
             .post({});
           await auditLogger.log({
             action: `compose_email_${mode}_send`,
             user: (await currentUser()) || 'unknown',
-            details: { message_id: messageId },
+            details: { message_id: messageId, ...(mailboxUser ? { mailbox_user: mailboxUser } : {}) },
             status: 'success',
           });
           return ok(`${mode === 'reply_all' ? 'Reply-all' : 'Reply'} sent.`, { success: true, message_id: messageId, mode: 'send' });
@@ -74,7 +86,7 @@ export const composeEmailTools: ToolSpec[] = [
         await auditLogger.log({
           action: `compose_email_${mode}_draft`,
           user: (await currentUser()) || 'unknown',
-          details: { message_id: messageId },
+          details: { message_id: messageId, ...(mailboxUser ? { mailbox_user: mailboxUser } : {}) },
           status: 'success',
         });
         return ok(`${mode === 'reply_all' ? 'Reply-all' : 'Reply'} draft created. Set confirm=true to send immediately.`, {
@@ -104,7 +116,7 @@ export const composeEmailTools: ToolSpec[] = [
         if (gate) return gate;
 
         await getGraph()
-          .api('/me/sendMail')
+          .api(graphMailboxPath('/sendMail', mailboxUser))
           .post({
             message: {
               subject: String(params.subject),
@@ -122,6 +134,7 @@ export const composeEmailTools: ToolSpec[] = [
             subject: sanitizeForLogs(String(params.subject)),
             attachment_count: attachmentBundle.count,
             attachment_bytes: attachmentBundle.totalBytes,
+            ...(mailboxUser ? { mailbox_user: mailboxUser } : {}),
           },
           status: 'success',
         });
@@ -134,7 +147,7 @@ export const composeEmailTools: ToolSpec[] = [
 
       // Draft mode
       const created = await getGraph()
-        .api('/me/messages')
+        .api(graphMailboxPath('/messages', mailboxUser))
         .post({
           subject: String(params.subject),
           body: { contentType: 'HTML', content: bodyHtml },
@@ -149,6 +162,7 @@ export const composeEmailTools: ToolSpec[] = [
           subject: sanitizeForLogs(String(params.subject)),
           attachment_count: attachmentBundle.count,
           attachment_bytes: attachmentBundle.totalBytes,
+          ...(mailboxUser ? { mailbox_user: mailboxUser } : {}),
         },
         status: 'success',
       });

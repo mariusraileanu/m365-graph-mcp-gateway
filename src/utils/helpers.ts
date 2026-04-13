@@ -39,6 +39,25 @@ export function escapeODataString(value: string): string {
   return value.replace(/'/g, "''");
 }
 
+/** Normalize optional mailbox_user input for shared mailbox/calendar operations. */
+export function normalizeMailboxUser(mailboxUser: unknown): string | null {
+  if (mailboxUser === undefined || mailboxUser === null) return null;
+  const value = String(mailboxUser).trim();
+  if (!value) return null;
+  if (!/^[^\s/?#]+$/.test(value)) {
+    throw new Error('VALIDATION_ERROR: mailbox_user must be a UPN/email/object-id without spaces');
+  }
+  return value;
+}
+
+/** Build a Graph path rooted at /me or /users/{mailbox_user}. */
+export function graphMailboxPath(resourcePath: string, mailboxUser?: unknown): string {
+  const normalized = normalizeMailboxUser(mailboxUser);
+  const suffix = resourcePath.startsWith('/') ? resourcePath : `/${resourcePath}`;
+  if (!normalized) return `/me${suffix}`;
+  return `/users/${encodeURIComponent(normalized)}${suffix}`;
+}
+
 export function sanitizeForLogs(content: string): string {
   if (!loadConfig().guardrails.email.stripSensitiveFromLogs) return content;
   return content
@@ -102,6 +121,10 @@ export function normalizeError(err: unknown): { code: string; message: string } 
   if (message.startsWith('AUTH_EXPIRED')) return { code: 'AUTH_EXPIRED', message };
   if (message.startsWith('AUTH_MISMATCH')) return { code: 'AUTH_MISMATCH', message };
   if (message.startsWith('CONFIG_ERROR')) return { code: 'CONFIG_ERROR', message };
+  if (message.startsWith('VALIDATION_ERROR')) return { code: 'VALIDATION_ERROR', message };
+  if (message.startsWith('FORBIDDEN')) return { code: 'FORBIDDEN', message };
+  if (message.startsWith('NOT_FOUND')) return { code: 'NOT_FOUND', message };
+  if (message.startsWith('UPSTREAM_ERROR')) return { code: 'UPSTREAM_ERROR', message };
   if (message.startsWith('TOKEN_CACHE_CORRUPTED')) return { code: 'TOKEN_CACHE_CORRUPTED', message };
   if (message.startsWith('FILE_TOO_LARGE')) return { code: 'FILE_TOO_LARGE', message };
   if (message.startsWith('MULTIPLE_ACCOUNTS_IN_CACHE')) return { code: 'MULTIPLE_ACCOUNTS_IN_CACHE', message };

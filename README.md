@@ -67,19 +67,26 @@ Register an app in Azure AD with these settings:
 
 **API Permissions** (all Delegated):
 
-| Permission              | Type      | Description                        |
-| ----------------------- | --------- | ---------------------------------- |
-| `Mail.Read`             | Delegated | Read user mail                     |
-| `Mail.ReadWrite`        | Delegated | Read and write user mail           |
-| `Mail.Send`             | Delegated | Send mail as user                  |
-| `Calendars.Read`        | Delegated | Read user calendars                |
-| `Calendars.Read.Shared` | Delegated | Read shared calendars              |
-| `Calendars.ReadWrite`   | Delegated | Read and write user calendars      |
-| `User.Read`             | Delegated | Sign in and read user profile      |
-| `Files.Read.All`        | Delegated | Read all files user can access     |
-| `Sites.Read.All`        | Delegated | Read items in all site collections |
+| Permission                   | Type      | Description                        |
+| ---------------------------- | --------- | ---------------------------------- |
+| `Mail.Read`                  | Delegated | Read user mail                     |
+| `Mail.Read.Shared`           | Delegated | Read shared mailboxes              |
+| `Mail.ReadWrite`             | Delegated | Read and write user mail           |
+| `Mail.ReadWrite.Shared`      | Delegated | Read/write shared mailboxes        |
+| `Mail.Send`                  | Delegated | Send mail as user                  |
+| `Mail.Send.Shared`           | Delegated | Send mail from shared mailboxes    |
+| `Calendars.Read`             | Delegated | Read user calendars                |
+| `Calendars.Read.Shared`      | Delegated | Read shared calendars              |
+| `Calendars.ReadWrite`        | Delegated | Read and write user calendars      |
+| `Calendars.ReadWrite.Shared` | Delegated | Read/write shared calendars        |
+| `User.Read`                  | Delegated | Sign in and read user profile      |
+| `Files.Read.All`             | Delegated | Read all files user can access     |
+| `Sites.Read.All`             | Delegated | Read items in all site collections |
 
 > Grant admin consent for your tenant after adding permissions.
+
+Shared mailbox/calendar access also requires Exchange sharing/delegate permissions.
+Scopes alone are not sufficient.
 
 Set `PUBLIC_HOST` if using a non-default port (e.g., `PUBLIC_HOST=http://localhost:18790`).
 
@@ -364,12 +371,12 @@ Before deployment, identity pinning is sourced from Key Vault secret `<slug>-ent
 3. **Registry** — Configures the Container App to pull from ACR using its managed identity (no admin credentials or access keys).
 
 4. **YAML Update** — Applies the full container spec:
-    - Real image from ACR
-    - Key Vault secret references for `GRAPH_MCP_CLIENT_ID` and `GRAPH_MCP_TENANT_ID`
-    - Key Vault secret reference for `EXPECTED_AAD_OBJECT_ID` (from `<slug>-entra-object-id`)
-    - NFS volume mount at `/app/data`
-    - Environment variables (`HOST`, `PORT`, `NODE_ENV`, `USER_SLUG`)
-    - Health probes (liveness, readiness, startup)
+   - Real image from ACR
+   - Key Vault secret references for `GRAPH_MCP_CLIENT_ID` and `GRAPH_MCP_TENANT_ID`
+   - Key Vault secret reference for `EXPECTED_AAD_OBJECT_ID` (from `<slug>-entra-object-id`)
+   - NFS volume mount at `/app/data`
+   - Environment variables (`HOST`, `PORT`, `NODE_ENV`, `USER_SLUG`)
+   - Health probes (liveness, readiness, startup)
    - Scale rule: `minReplicas=1`, `maxReplicas=1`
 
 If the Container App already exists, `add-user` skips to phase 4 (YAML update) — this is how you roll out image updates.

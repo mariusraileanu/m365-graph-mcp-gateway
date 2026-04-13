@@ -1,6 +1,15 @@
 import { z } from 'zod';
 import { isLoggedIn, getGraph, getAccessToken } from '../auth/index.js';
-import { ok, fail, includeFull, normalizeTop, compactText, escapeODataString } from '../utils/helpers.js';
+import {
+  ok,
+  fail,
+  includeFull,
+  normalizeTop,
+  compactText,
+  escapeODataString,
+  graphMailboxPath,
+  normalizeMailboxUser,
+} from '../utils/helpers.js';
 import { loadConfig } from '../config/index.js';
 import { graphCache } from '../utils/cache.js';
 import { pickMail } from '../graph/mail.js';
@@ -28,16 +37,21 @@ function isTextMime(mime: string): boolean {
 export const getTools: ToolSpec[] = [
   {
     name: 'get_email',
-    description: 'Get a specific email by ID. Use after find to retrieve full details.',
-    schema: z.object({ message_id: z.string().min(1), include_full: z.boolean().optional() }).strict(),
+    description:
+      'Get a specific email by ID. Use after find to retrieve full details. ' +
+      'Optional mailbox_user targets a shared mailbox via /users/{mailbox_user}.',
+    schema: z
+      .object({ message_id: z.string().min(1), include_full: z.boolean().optional(), mailbox_user: z.string().min(1).optional() })
+      .strict(),
     run: async (params) => {
       if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
-      const cacheKey = `email:${params.message_id}`;
+      const mailboxUser = normalizeMailboxUser(params.mailbox_user);
+      const cacheKey = `email:${mailboxUser || 'me'}:${params.message_id}`;
       const cached = graphCache.get(cacheKey) as Record<string, unknown> | undefined;
       const message =
         cached ??
         (await getGraph()
-          .api(`/me/messages/${encodeURIComponent(String(params.message_id))}`)
+          .api(graphMailboxPath(`/messages/${encodeURIComponent(String(params.message_id))}`, mailboxUser))
           .select('id,subject,from,toRecipients,ccRecipients,bodyPreview,isRead,receivedDateTime,conversationId,webLink,body')
           .get());
       if (!cached) graphCache.set(cacheKey, message as Record<string, unknown>, CACHE_TTL_MS);
@@ -46,16 +60,21 @@ export const getTools: ToolSpec[] = [
   },
   {
     name: 'get_event',
-    description: 'Get a specific calendar event by ID. Use after find to retrieve full details.',
-    schema: z.object({ event_id: z.string().min(1), include_full: z.boolean().optional() }).strict(),
+    description:
+      'Get a specific calendar event by ID. Use after find to retrieve full details. ' +
+      'Optional mailbox_user targets a shared calendar via /users/{mailbox_user}.',
+    schema: z
+      .object({ event_id: z.string().min(1), include_full: z.boolean().optional(), mailbox_user: z.string().min(1).optional() })
+      .strict(),
     run: async (params) => {
       if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
-      const cacheKey = `event:${params.event_id}`;
+      const mailboxUser = normalizeMailboxUser(params.mailbox_user);
+      const cacheKey = `event:${mailboxUser || 'me'}:${params.event_id}`;
       const cached = graphCache.get(cacheKey) as Record<string, unknown> | undefined;
       const event =
         cached ??
         (await getGraph()
-          .api(`/me/events/${encodeURIComponent(String(params.event_id))}`)
+          .api(graphMailboxPath(`/events/${encodeURIComponent(String(params.event_id))}`, mailboxUser))
           .header('Prefer', `outlook.timezone="${resolveTimezone()}"`)
           .select('id,subject,start,end,location,organizer,attendees,responseStatus,isOnlineMeeting,onlineMeeting,webLink,bodyPreview')
           .get());
@@ -68,11 +87,12 @@ export const getTools: ToolSpec[] = [
     description:
       'Fetch all messages in an email conversation thread. ' +
       'Provide conversation_id (from get_email with include_full=true) or message_id (the tool fetches conversationId automatically). ' +
-      'Returns messages sorted oldest-first.',
+      'Returns messages sorted oldest-first. Optional mailbox_user targets a shared mailbox.',
     schema: z
       .object({
         conversation_id: z.string().min(1).optional(),
         message_id: z.string().min(1).optional(),
+        mailbox_user: z.string().min(1).optional(),
         top: z.number().int().positive().max(50).optional(),
         include_full: z.boolean().optional(),
       })
@@ -82,13 +102,14 @@ export const getTools: ToolSpec[] = [
       }),
     run: async (params) => {
       if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
+      const mailboxUser = normalizeMailboxUser(params.mailbox_user);
 
       let conversationId = typeof params.conversation_id === 'string' ? params.conversation_id.trim() : '';
 
       // If no conversationId provided, fetch it from the message
       if (!conversationId) {
         const msg = await getGraph()
-          .api(`/me/messages/${encodeURIComponent(String(params.message_id))}`)
+          .api(graphMailboxPath(`/messages/${encodeURIComponent(String(params.message_id))}`, mailboxUser))
           .select('conversationId')
           .get();
         conversationId = String((msg as Record<string, unknown>).conversationId || '').trim();
@@ -103,13 +124,13 @@ export const getTools: ToolSpec[] = [
       const fullFields = `${baseFields},toRecipients,ccRecipients,webLink,body`;
 
       // Cache keyed on conversationId + include_full + top to avoid stale partial results
-      const cacheKey = `thread:${conversationId}:${full}:${top}`;
+      const cacheKey = `thread:${mailboxUser || 'me'}:${conversationId}:${full}:${top}`;
       const cachedResponse = graphCache.get(cacheKey) as { value?: Array<Record<string, unknown>> } | undefined;
 
       const response =
         cachedResponse ??
         (await getGraph()
-          .api('/me/messages')
+          .api(graphMailboxPath('/messages', mailboxUser))
           .filter(`conversationId eq '${escapeODataString(conversationId)}'`)
           .select(full ? fullFields : baseFields)
           .top(top)
@@ -123,6 +144,7 @@ export const getTools: ToolSpec[] = [
         .map((m) => pickMail(m, full));
 
       return ok(`Thread: ${messages.length} message(s).`, {
+        ...(mailboxUser ? { mailbox_user: mailboxUser } : {}),
         conversation_id: conversationId,
         message_count: messages.length,
         messages,
