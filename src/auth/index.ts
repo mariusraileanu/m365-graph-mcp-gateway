@@ -387,6 +387,26 @@ export async function isLoggedIn(): Promise<boolean> {
 let pendingDeviceCodeInfo: DeviceCodeInfo | null = null;
 let pendingDeviceCodePromise: Promise<void> | null = null;
 let pendingDeviceCodeError: string | null = null;
+let pendingDeviceCodeExpiresAtMs: number | null = null;
+let deviceCodeFlowSeq = 0;
+let activeDeviceCodeFlowSeq: number | null = null;
+
+export function _forcePendingDeviceCodeExpiryForTest(): void {
+  if (pendingDeviceCodePromise) {
+    pendingDeviceCodeExpiresAtMs = Date.now() - 6_000;
+  }
+}
+
+function clearPendingDeviceCodeState(): void {
+  pendingDeviceCodeInfo = null;
+  pendingDeviceCodePromise = null;
+  pendingDeviceCodeExpiresAtMs = null;
+  activeDeviceCodeFlowSeq = null;
+}
+
+function isPendingDeviceCodeExpired(now = Date.now()): boolean {
+  return pendingDeviceCodeExpiresAtMs !== null && now >= pendingDeviceCodeExpiresAtMs + 5_000;
+}
 
 /**
  * Start a device-code login and return the code/URL immediately.
@@ -400,10 +420,28 @@ export async function startDeviceCodeLogin(): Promise<DeviceCodeInfo> {
   // Guard: OID must be configured before any login
   requireExpectedObjectId();
 
-  // If there's already a pending flow, return the existing code info
+  // If there's already a pending flow, return the existing code info unless
+  // it has already expired (stale state).
   if (pendingDeviceCodeInfo && pendingDeviceCodePromise) {
-    return pendingDeviceCodeInfo;
+    if (isPendingDeviceCodeExpired()) {
+      pendingDeviceCodeError = 'AUTH_EXPIRED: device code expired — start login_device again';
+      clearPendingDeviceCodeState();
+    } else {
+      return pendingDeviceCodeInfo;
+    }
   }
+
+  if (pendingDeviceCodePromise) {
+    if (isPendingDeviceCodeExpired()) {
+      pendingDeviceCodeError = 'AUTH_EXPIRED: device code expired — start login_device again';
+      clearPendingDeviceCodeState();
+    } else {
+      throw new Error('LOGIN_IN_PROGRESS: device code login already in progress');
+    }
+  }
+
+  const flowSeq = ++deviceCodeFlowSeq;
+  activeDeviceCodeFlowSeq = flowSeq;
 
   const app = await getMsal();
 
@@ -425,6 +463,7 @@ export async function startDeviceCodeLogin(): Promise<DeviceCodeInfo> {
         message: res.message,
         expiresIn: res.expiresIn,
       };
+      pendingDeviceCodeExpiresAtMs = Date.now() + res.expiresIn * 1000;
 
       // Emit MCP logging notification (reaches the client in stdio mode)
       sendNotification('notice', 'auth', {
@@ -448,6 +487,7 @@ export async function startDeviceCodeLogin(): Promise<DeviceCodeInfo> {
   pendingDeviceCodePromise = app
     .acquireTokenByDeviceCode(request)
     .then(async (response) => {
+      if (activeDeviceCodeFlowSeq !== flowSeq) return;
       if (!response?.account) throw new Error('LOGIN_FAILED: device code login did not return an account');
       lastKnownAccount = response.account;
       // Write metadata on successful login
@@ -455,11 +495,12 @@ export async function startDeviceCodeLogin(): Promise<DeviceCodeInfo> {
       if (oid) await writeTokenCacheMetadata(oid).catch(() => {});
     })
     .catch((err) => {
+      if (activeDeviceCodeFlowSeq !== flowSeq) return;
       pendingDeviceCodeError = err instanceof Error ? err.message : String(err);
     })
     .finally(() => {
-      pendingDeviceCodeInfo = null;
-      pendingDeviceCodePromise = null;
+      if (activeDeviceCodeFlowSeq !== flowSeq) return;
+      clearPendingDeviceCodeState();
     });
 
   // Wait only for the callback to fire (fast — typically <1s)
@@ -470,6 +511,11 @@ export async function startDeviceCodeLogin(): Promise<DeviceCodeInfo> {
 /** Check the status of a pending device code login. */
 export function deviceCodeLoginStatus(): { pending: boolean; error: string | null } {
   if (pendingDeviceCodePromise) {
+    if (isPendingDeviceCodeExpired()) {
+      pendingDeviceCodeError = 'AUTH_EXPIRED: device code expired — start login_device again';
+      clearPendingDeviceCodeState();
+      return { pending: false, error: pendingDeviceCodeError };
+    }
     return { pending: true, error: null };
   }
   return { pending: false, error: pendingDeviceCodeError };
@@ -538,6 +584,8 @@ export async function logout(): Promise<void> {
   pendingDeviceCodeInfo = null;
   pendingDeviceCodePromise = null;
   pendingDeviceCodeError = null;
+  pendingDeviceCodeExpiresAtMs = null;
+  activeDeviceCodeFlowSeq = null;
 
   // Remove token cache file
   const cachePath = await getTokenCachePath();
@@ -920,6 +968,7 @@ export async function authStatus(): Promise<AuthStatusResult> {
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.startsWith('AUTH_EXPIRED')) {
         result.error = msg;
+        result.logged_in = false;
       }
     }
   }
