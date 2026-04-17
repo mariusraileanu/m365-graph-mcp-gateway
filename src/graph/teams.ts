@@ -161,7 +161,7 @@ export async function getMeetingTranscript(meetingId: string, transcriptId: stri
 
 export async function getTranscriptContent(meetingId: string, transcriptId: string): Promise<string> {
   const token = await getAccessToken();
-  const endpoint = `https://graph.microsoft.com/v1.0/me/onlineMeetings/${encodeURIComponent(meetingId)}/transcripts/${encodeURIComponent(transcriptId)}/content`;
+  const endpoint = `https://graph.microsoft.com/v1.0/me/onlineMeetings/${encodeURIComponent(meetingId)}/transcripts/${encodeURIComponent(transcriptId)}/content?$format=text/vtt`;
   const response = await fetch(endpoint, {
     headers: {
       Authorization: `Bearer ${token}`,
@@ -169,7 +169,9 @@ export async function getTranscriptContent(meetingId: string, transcriptId: stri
     },
   });
   if (!response.ok) {
-    throw new Error(`UPSTREAM_ERROR: transcript content fetch failed (${response.status})`);
+    const body = await response.text().catch(() => '');
+    const detail = body ? ` ${compactText(body, 1000).text}` : '';
+    throw new Error(`UPSTREAM_ERROR: transcript content fetch failed (${response.status})${detail}`);
   }
   return await response.text();
 }
