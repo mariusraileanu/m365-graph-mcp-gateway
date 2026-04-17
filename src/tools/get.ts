@@ -30,8 +30,61 @@ const PARSED_MAX_BYTES = 50 * 1024 * 1024;
 /** MIME prefixes considered text-safe for inline return. */
 const TEXT_MIME_PREFIXES = ['text/', 'application/json', 'application/xml', 'application/javascript'];
 
+const GRAPH_ROOT = 'https://graph.microsoft.com/v1.0';
+const GRAPH_SHARED_LINK_HOST_SUFFIXES = [
+  '.sharepoint.com',
+  '.sharepoint.us',
+  '.sharepoint.de',
+  '.sharepoint.cn',
+  '.sharepoint-df.com',
+  '1drv.ms',
+  'onedrive.live.com',
+  'onedrive.com',
+] as const;
+
 function isTextMime(mime: string): boolean {
   return TEXT_MIME_PREFIXES.some((p) => mime.startsWith(p));
+}
+
+function isGraphSharedLinkUrl(rawUrl: string): boolean {
+  let host = '';
+  try {
+    host = new URL(rawUrl).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return GRAPH_SHARED_LINK_HOST_SUFFIXES.some((suffix) => host === suffix || host.endsWith(suffix));
+}
+
+function encodeGraphShareId(rawUrl: string): string {
+  return `u!${Buffer.from(rawUrl, 'utf8').toString('base64url')}`;
+}
+
+function graphShareDriveItemPath(rawUrl: string): string {
+  return `/shares/${encodeGraphShareId(rawUrl)}/driveItem`;
+}
+
+async function getDriveItemByUrl(rawUrl: string): Promise<Record<string, unknown>> {
+  if (!isGraphSharedLinkUrl(rawUrl)) {
+    throw new Error('VALIDATION_ERROR: url must be a SharePoint or OneDrive URL');
+  }
+  return (await getGraph().api(graphShareDriveItemPath(rawUrl)).get()) as Record<string, unknown>;
+}
+
+async function downloadDriveItemByUrl(rawUrl: string): Promise<Buffer> {
+  if (!isGraphSharedLinkUrl(rawUrl)) {
+    throw new Error('VALIDATION_ERROR: url must be a SharePoint or OneDrive URL');
+  }
+  const token = await getAccessToken();
+  const endpoint = `${GRAPH_ROOT}${graphShareDriveItemPath(rawUrl)}/content`;
+  const response = await fetch(endpoint, {
+    headers: { Authorization: `Bearer ${token}` },
+    keepalive: true,
+  });
+  if (!response.ok) {
+    throw new Error(`UPSTREAM_ERROR: file download by URL failed (${response.status})`);
+  }
+  return Buffer.from(await response.arrayBuffer());
 }
 
 export const getTools: ToolSpec[] = [
@@ -323,6 +376,127 @@ export const getTools: ToolSpec[] = [
         encoding: 'base64',
         content: buffer.toString('base64'),
         truncated: false,
+      });
+    },
+  },
+  {
+    name: 'get_file_by_url',
+    description:
+      'Access a OneDrive/SharePoint file directly from its Teams/SharePoint URL using Graph shares. ' +
+      'Use this for Teams attachments when you have contentUrl/webUrl but not drive_id/item_id. ' +
+      'Modes match get_file_content: metadata, inline, binary, parsed.',
+    schema: z
+      .object({
+        url: z.string().url(),
+        mode: z.enum(['metadata', 'inline', 'binary', 'parsed']).default('metadata'),
+        max_chars: z.number().int().positive().max(50000).optional(),
+      })
+      .strict(),
+    run: async (params) => {
+      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
+
+      const rawUrl = String(params.url).trim();
+      const mode = params.mode ?? 'metadata';
+      const meta = await getDriveItemByUrl(rawUrl);
+
+      const fileSize = Number(meta.size || 0);
+      const fileName = String(meta.name || 'unknown');
+      const fileMeta = meta.file as Record<string, unknown> | undefined;
+      const mimeType = String(fileMeta?.mimeType || 'application/octet-stream');
+      const downloadUrl = (meta['@microsoft.graph.downloadUrl'] as string) || null;
+      const webUrl = (meta.webUrl as string) || rawUrl;
+
+      if (mode === 'metadata') {
+        return ok(`File metadata: ${fileName}`, {
+          ...pickFile(meta, includeFull(params)),
+          mime_type: mimeType,
+          download_url: downloadUrl,
+          web_url: webUrl,
+        });
+      }
+
+      if (mode === 'parsed') {
+        if (!isSupportedForParsing(fileName)) {
+          return fail('UNSUPPORTED_FILE_TYPE', `File '${fileName}' cannot be parsed. Supported: ${supportedParseExtensions().join(', ')}`, {
+            name: fileName,
+            mime_type: mimeType,
+            download_url: downloadUrl,
+            web_url: webUrl,
+          });
+        }
+
+        if (fileSize > PARSED_MAX_BYTES) {
+          return fail(
+            'FILE_TOO_LARGE',
+            `File '${fileName}' is ${fileSize} bytes (limit: ${PARSED_MAX_BYTES} for parsed mode). Use the download_url instead.`,
+            { name: fileName, size_bytes: fileSize, limit_bytes: PARSED_MAX_BYTES, download_url: downloadUrl, web_url: webUrl },
+          );
+        }
+
+        const buffer = await downloadDriveItemByUrl(rawUrl);
+        const maxChars = typeof params.max_chars === 'number' ? params.max_chars : 50_000;
+        const parsed = await parseFile(buffer, fileName, maxChars);
+
+        return ok(`Parsed: ${fileName}`, {
+          name: parsed.file_name,
+          document_type: parsed.document_type,
+          size_bytes: parsed.size_bytes,
+          content: parsed.content,
+          truncated: parsed.truncated,
+          char_count: parsed.char_count,
+          metadata: parsed.metadata,
+          web_url: webUrl,
+        });
+      }
+
+      if (fileSize > INLINE_MAX_BYTES) {
+        return fail(
+          'FILE_TOO_LARGE',
+          `File '${fileName}' is ${fileSize} bytes (limit: ${INLINE_MAX_BYTES}). Use metadata mode for a download_url instead.`,
+          {
+            name: fileName,
+            size_bytes: fileSize,
+            limit_bytes: INLINE_MAX_BYTES,
+            download_url: downloadUrl,
+            web_url: webUrl,
+          },
+        );
+      }
+
+      if (mode === 'inline' && !isTextMime(mimeType)) {
+        return fail('UNSUPPORTED_FILE_TYPE', `File '${fileName}' has non-text MIME type '${mimeType}'. Use binary mode or metadata mode.`, {
+          name: fileName,
+          mime_type: mimeType,
+          size_bytes: fileSize,
+          download_url: downloadUrl,
+          web_url: webUrl,
+        });
+      }
+
+      const buffer = await downloadDriveItemByUrl(rawUrl);
+
+      if (mode === 'inline') {
+        const maxChars = Number.parseInt(String(params.max_chars || loadConfig().output.defaultMaxChars), 10);
+        const raw = buffer.toString('utf-8');
+        const compact = compactText(raw, maxChars);
+        return ok(`File content: ${fileName}`, {
+          name: fileName,
+          mime_type: mimeType,
+          size_bytes: buffer.length,
+          encoding: 'text',
+          content: compact.text,
+          truncated: compact.truncated,
+        });
+      }
+
+      return ok(`File content: ${fileName} (binary)`, {
+        name: fileName,
+        mime_type: mimeType,
+        size_bytes: buffer.length,
+        encoding: 'base64',
+        content: buffer.toString('base64'),
+        truncated: false,
+        web_url: webUrl,
       });
     },
   },
