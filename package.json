@@ -5,11 +5,11 @@
   "main": "dist/index.js",
   "type": "module",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc -p tsconfig.build.json",
+    "build:test": "tsc -p tsconfig.test.json",
     "start": "node dist/index.js",
     "dev": "tsx watch src/index.ts",
     "login": "tsx src/index.ts --login",
-    "login:interactive": "tsx src/index.ts --login-interactive",
     "login:device": "tsx src/index.ts --login-device",
     "check": "tsc --noEmit",
     "lint": "eslint 'src/**/*.ts'",

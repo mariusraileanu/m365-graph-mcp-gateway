@@ -271,7 +271,7 @@ Errors use a `CODE: message` pattern:
 | `CACHE_DECRYPTION_FAILED`    | Token cache exists but cannot be decrypted (wrong key/corrupt)             |
 | `TOKEN_IDENTITY_MISMATCH`    | Cached identity does not match expected Entra object ID                    |
 | `FILE_TOO_LARGE`             | File exceeds 10 MB inline limit — use `download_url` instead               |
-| `VALIDATION_ERROR`           | Missing or invalid parameters                                              |
+| `VALIDATION_ERROR`           | Missing or invalid parameters (includes field-level details)               |
 | `FORBIDDEN`                  | Recipient domain not in allowlist                                          |
 | `NOT_FOUND`                  | Resource not found                                                         |
 | `UPSTREAM_ERROR`             | Microsoft Graph API error                                                  |
@@ -535,7 +535,7 @@ There are two modes for event search, selected automatically:
 **Date-range mode** (when `start_date` AND `end_date` are provided):
 
 - Uses the CalendarView API — returns all events in the range including expanded recurring instances
-- Results include: organizer (name + email), attendees (name, email, response status), location, Teams join URL, body preview
+- Results include: organizer (name + email), location, Teams join URL, and event links in a compact summary-first shape
 - Provider: `"calendar-view"`
 - **Important**: resolve relative dates to concrete ISO 8601 before calling. Examples:
   - "Monday" (today is Sat Feb 21) → `start_date: "2026-02-23T00:00:00"`, `end_date: "2026-02-24T00:00:00"`
@@ -558,9 +558,10 @@ Uses Graph Search API.
 #### Response notes
 
 - `content[0].text` contains the full human-readable summary with titles, document/event links, and snippets — always present this to the user.
-- `structuredContent.results[]` has the full structured data including `source_url` (files), `web_link` (events), attendees, organizer, etc.
+- `structuredContent.results[]` has the structured data including `source_url` (files), `web_link` (events), organizer, etc.
 - File results include a `source_url` (SharePoint/OneDrive link) — always show this link to the user.
 - Event results include a `web_link` (Outlook link) and `teams_join_url` — show these when relevant.
+- Use `get_event` with `include_full: true` only when the caller needs attendee lists or other expanded event details.
 
 **Example** — meetings on a specific day:
 
@@ -654,16 +655,10 @@ Uses Graph Search API.
       "start": "2026-02-23T09:00:00.0000000",
       "end": "2026-02-23T10:00:00.0000000",
       "organizer": { "name": "Jane Doe", "address": "jane@contoso.com" },
-      "attendee_count": 5,
-      "attendees": [
-        { "name": "Bob Smith", "email": "bob@contoso.com", "type": "required", "response": "accepted" },
-        { "name": "Alice Jones", "email": "alice@contoso.com", "type": "required", "response": "tentativelyAccepted" }
-      ],
       "location": "Room 4B",
       "is_online_meeting": true,
       "teams_join_url": "https://teams.microsoft.com/l/meetup-join/...",
-      "web_link": "https://outlook.office365.com/owa/?itemid=...",
-      "body_preview": "Agenda: review sprint backlog..."
+      "web_link": "https://outlook.office365.com/owa/?itemid=..."
     }
   ]
 }
@@ -825,6 +820,8 @@ Fetch a specific calendar event by ID. Use after `find` to retrieve full details
   "body_preview": "Agenda: review sprint backlog..."
 }
 ```
+
+Default `get_event` responses are intentionally compact. Pass `include_full: true` when attendee lists or body preview are needed.
 
 ---
 

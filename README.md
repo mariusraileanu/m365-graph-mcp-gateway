@@ -48,10 +48,6 @@ npm run login:device
 # Displays a code to enter at https://microsoft.com/devicelogin
 ```
 
-### Web UI login (Docker)
-
-Start the server, then open `http://localhost:3000/` to sign in via browser.
-
 ### Azure AD App Registration
 
 Register an app in Azure AD with these settings:
@@ -59,9 +55,8 @@ Register an app in Azure AD with these settings:
 1. Go to **Azure Portal > App registrations > New registration**
 2. Set a name (e.g., `graph-mcp-gateway`)
 3. Under **Supported account types**, select "Accounts in this organizational directory only (Single tenant)"
-4. Under **Redirect URIs**, add:
-   - Type: **SPA**
-   - URI: `http://localhost:3000/auth/callback`
+4. Under **Redirect URIs**, add a localhost redirect URI suitable for your MSAL interactive login flow.
+   Example: `http://localhost`
 5. Click **Register**
 6. Note the **Application (client) ID** and **Directory (tenant) ID** — you'll need these
 
@@ -88,8 +83,6 @@ Register an app in Azure AD with these settings:
 Shared mailbox/calendar access also requires Exchange sharing/delegate permissions.
 Scopes alone are not sufficient.
 
-Set `PUBLIC_HOST` if using a non-default port (e.g., `PUBLIC_HOST=http://localhost:18790`).
-
 ## MCP Endpoints
 
 | Endpoint       | Method | Description           |
@@ -97,7 +90,6 @@ Set `PUBLIC_HOST` if using a non-default port (e.g., `PUBLIC_HOST=http://localho
 | `/mcp`         | POST   | MCP JSON-RPC endpoint |
 | `/health`      | GET    | Health check          |
 | `/auth/status` | GET    | Auth status (JSON)    |
-| `/`            | GET    | Web auth UI           |
 
 The MCP server accepts plain JSON-RPC POST requests — no SSE, no sessions. Each request is independent.
 
@@ -159,8 +151,6 @@ docker compose build && docker compose up -d
 
 # Login via device code in container
 docker compose run --rm -it m365-graph-mcp-gateway node dist/index.js --login-device
-
-# Or use the web UI at http://localhost:18790/
 
 # Health check
 curl -s http://localhost:18790/health | jq
@@ -358,8 +348,7 @@ This creates a per-user Container App named `ca-graph-mcp-gw-<env>-<user>` (e.g.
 Before deployment, identity pinning is sourced from Key Vault secret `<slug>-entra-object-id`.
 
 - If `<slug>-entra-object-id` exists, it is used directly.
-- If missing but legacy `<slug>-graph-mcp-object-id` exists, the script migrates it automatically.
-- If both are missing, the script resolves `${slug}@doh.gov.ae` in Entra ID and creates `<slug>-entra-object-id`.
+- If it is missing, the script resolves `${slug}@doh.gov.ae` in Entra ID and creates `<slug>-entra-object-id`.
 
 1. **Create** — Deploys a Container App with a default quickstart image and system-assigned managed identity. At this point the identity doesn't exist yet, so we can't pull from ACR or reference Key Vault secrets.
 
@@ -422,7 +411,7 @@ This scales up the container, runs a built-in smoke test suite inside it, and sc
 | #   | Check                | What it tests                                                    |
 | --- | -------------------- | ---------------------------------------------------------------- |
 | 1   | `health`             | `GET /health` returns status OK and authenticated user           |
-| 2   | `tools/list`         | MCP `tools/list` returns all 11 tools                            |
+| 2   | `tools/list`         | MCP `tools/list` returns all 22 tools                            |
 | 3   | `find mail`          | Graph API mail search works                                      |
 | 4   | `find events`        | Graph API calendar date-range search works                       |
 | 5   | `find files`         | Graph API file search works                                      |
@@ -648,7 +637,6 @@ src/
   mcp/          HTTP + stdio MCP JSON-RPC server
   tools/        MCP tool definitions (find, get, compose-email, etc.)
   utils/        Helpers, audit logger, types, structured logging, smoke test
-  public/       Web auth UI
   index.ts      Entry point (--smoke, --login-device, --user, --stdio flags)
 scripts/
   azure.sh      Full Azure lifecycle (init, build, add, remove, login, scale, smoke, destroy)

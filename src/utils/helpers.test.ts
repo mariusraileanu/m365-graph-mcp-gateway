@@ -2,12 +2,12 @@ import { describe, it, mock, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'fs';
 import path from 'path';
+import { normalizeError } from '../tools/results.js';
 import {
   resolveStoragePath,
   requireUserSlug,
   parseRecipients,
   compactText,
-  normalizeError,
   stripHtml,
   escapeHtml,
   sanitizeEmailHtml,
@@ -160,6 +160,10 @@ describe('normalizeError', () => {
   it('recognizes FILE_TOO_LARGE error code', () => {
     const result = normalizeError(new Error('FILE_TOO_LARGE: file exceeds 10 MB limit'));
     assert.equal(result.code, 'FILE_TOO_LARGE');
+  });
+  it('leaves generic required-text errors as INTERNAL_ERROR', () => {
+    const result = normalizeError(new Error('subject is required'));
+    assert.equal(result.code, 'INTERNAL_ERROR');
   });
 });
 

@@ -24,14 +24,14 @@ const SUPPORTED_FIELDS = new Set([
   'Title',
 ]);
 
-export interface KqlClause {
+interface KqlClause {
   field: string;
   /** Operator — defaults to ':' (contains). Use '=' for exact, '>','<','>=','<=' for dates. */
   operator?: ':' | '=' | '>' | '<' | '>=' | '<=';
   value: string;
 }
 
-export interface KqlBuildOptions {
+interface KqlBuildOptions {
   clauses: KqlClause[];
   /** Join multiple clauses with AND (default) or OR. */
   join?: 'AND' | 'OR';

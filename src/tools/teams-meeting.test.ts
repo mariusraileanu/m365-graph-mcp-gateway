@@ -1,5 +1,6 @@
 import { describe, it, mock, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { createSilentLogMock, createTestConfig } from '../test-support/tool-test-helpers.js';
 
 // ── Module-level mocks ──────────────────────────────────────────────────────
 
@@ -23,19 +24,7 @@ function createChainableClient() {
 
 mock.module('../config/index.js', {
   namedExports: {
-    loadConfig: () => ({
-      azure: { clientId: 'test', tenantId: 'test' },
-      scopes: ['OnlineMeetingTranscript.Read.All', 'OnlineMeetings.Read'],
-      guardrails: {
-        email: { allowDomains: ['example.com'], requireDraftApproval: true, stripSensitiveFromLogs: false },
-        audit: { enabled: false, logPath: '/tmp/audit.jsonl', retentionDays: 90 },
-      },
-      safety: { requireConfirmForWrites: true },
-      output: { defaultIncludeFull: false, defaultMaxChars: 4000, hardMaxChars: 20000 },
-      search: { defaultTop: 10, maxTop: 50 },
-      calendar: { defaultTimezone: 'UTC' },
-      storage: { tokenPath: 'graph-mcp/tokens' },
-    }),
+    loadConfig: () => createTestConfig({ scopes: ['OnlineMeetingTranscript.Read.All', 'OnlineMeetings.Read'] }),
   },
 });
 
@@ -60,7 +49,7 @@ mock.module('../utils/audit.js', {
 
 mock.module('../utils/log.js', {
   namedExports: {
-    log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+    log: createSilentLogMock(),
   },
 });
 
@@ -209,7 +198,7 @@ describe('list_meeting_transcripts', () => {
   });
 
   it('returns available=false when transcription not enabled (404)', async () => {
-    mockListTranscriptsError = new Error('Graph request failed: 404 not found');
+    mockListTranscriptsError = Object.assign(new Error('Graph request failed'), { statusCode: 404 });
     const result = await callTool('list_meeting_transcripts', { meeting_id: 'meeting-404' });
     assert.ok(!('isError' in result));
     const sc = result.structuredContent as Record<string, unknown>;
@@ -218,7 +207,7 @@ describe('list_meeting_transcripts', () => {
   });
 
   it('returns available=false when no permission (403)', async () => {
-    mockListTranscriptsError = new Error('Graph request failed: 403 Forbidden');
+    mockListTranscriptsError = Object.assign(new Error('Graph request failed'), { statusCode: 403 });
     const result = await callTool('list_meeting_transcripts', { meeting_id: 'meeting-403' });
     assert.ok(!('isError' in result));
     const sc = result.structuredContent as Record<string, unknown>;
@@ -227,7 +216,7 @@ describe('list_meeting_transcripts', () => {
   });
 
   it('returns available=false when meeting expired (410)', async () => {
-    mockListTranscriptsError = new Error('Graph request failed: 410 Gone');
+    mockListTranscriptsError = Object.assign(new Error('Graph request failed'), { statusCode: 410 });
     const result = await callTool('list_meeting_transcripts', { meeting_id: 'meeting-410' });
     assert.ok(!('isError' in result));
     const sc = result.structuredContent as Record<string, unknown>;
@@ -256,7 +245,7 @@ describe('get_meeting_transcript', () => {
   });
 
   it('returns available=false on 404', async () => {
-    mockGetTranscriptError = new Error('404 not found');
+    mockGetTranscriptError = Object.assign(new Error('not found'), { statusCode: 404 });
     const result = await callTool('get_meeting_transcript', {
       meeting_id: 'meeting-1',
       transcript_id: 'trans-missing',
@@ -284,7 +273,7 @@ describe('get_transcript_content', () => {
   });
 
   it('returns available=false on 403', async () => {
-    mockGetTranscriptContentError = new Error('403 Forbidden');
+    mockGetTranscriptContentError = Object.assign(new Error('forbidden'), { statusCode: 403 });
     const result = await callTool('get_transcript_content', {
       meeting_id: 'meeting-1',
       transcript_id: 'trans-1',

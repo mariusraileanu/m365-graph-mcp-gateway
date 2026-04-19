@@ -1,5 +1,6 @@
 import { describe, it, mock, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { createAuditLoggerMock, createSilentLogMock, createTestConfig } from '../test-support/tool-test-helpers.js';
 
 // ── Module-level mocks ──────────────────────────────────────────────────────
 
@@ -32,19 +33,7 @@ function createChainableClient() {
 let allowDomains = ['example.com', 'b.com'];
 mock.module('../config/index.js', {
   namedExports: {
-    loadConfig: () => ({
-      azure: { clientId: 'test', tenantId: 'test' },
-      scopes: ['Mail.ReadWrite'],
-      guardrails: {
-        email: { allowDomains, requireDraftApproval: true, stripSensitiveFromLogs: false },
-        audit: { enabled: false, logPath: '/tmp/audit.jsonl', retentionDays: 90 },
-      },
-      safety: { requireConfirmForWrites: true },
-      output: { defaultIncludeFull: false, defaultMaxChars: 4000, hardMaxChars: 20000 },
-      search: { defaultTop: 10, maxTop: 50 },
-      calendar: { defaultTimezone: 'UTC' },
-      storage: { tokenPath: 'graph-mcp/tokens' },
-    }),
+    loadConfig: () => createTestConfig({ scopes: ['Mail.ReadWrite'], guardrails: { email: { allowDomains } } }),
   },
 });
 
@@ -61,13 +50,7 @@ mock.module('../auth/index.js', {
 const auditLogCalls: Array<Record<string, unknown>> = [];
 mock.module('../utils/audit.js', {
   namedExports: {
-    auditLogger: {
-      log: async (entry: Record<string, unknown>) => {
-        auditLogCalls.push(entry);
-      },
-      list: async () => [],
-      init: async () => {},
-    },
+    auditLogger: createAuditLoggerMock(auditLogCalls),
   },
 });
 
@@ -94,7 +77,7 @@ mock.module('../graph/calendar.js', {
 
 mock.module('../utils/log.js', {
   namedExports: {
-    log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+    log: createSilentLogMock(),
   },
 });
 

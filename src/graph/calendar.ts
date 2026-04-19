@@ -1,6 +1,9 @@
 import { getGraph } from '../auth/index.js';
 import { loadConfig } from '../config/index.js';
 import { graphMailboxPath } from '../utils/helpers.js';
+import type { GraphAttendee, GraphCollectionResponse, GraphEvent } from './types.js';
+
+type EventDetailLevel = 'minimal' | 'full';
 
 /** Map common IANA timezone identifiers to Windows timezone names used by Microsoft Graph. */
 const IANA_TO_WINDOWS: Record<string, string> = {
@@ -77,7 +80,7 @@ export function resolveTimezone(tz?: string): string {
  *
  * If the datetime already contains an offset ('+', 'Z'), it is returned as-is.
  */
-export function localToUtc(datetime: string, tz?: string): string {
+function localToUtc(datetime: string, tz?: string): string {
   // If it already has timezone info, return as-is
   if (/[Zz+]/.test(datetime) || /\d-\d{2}:\d{2}$/.test(datetime)) return datetime;
   const timezone = tz?.trim() || loadConfig().calendar.defaultTimezone;
@@ -89,44 +92,32 @@ export function localToUtc(datetime: string, tz?: string): string {
   return utc.toISOString().replace('Z', '');
 }
 
-interface AttendeeEmail {
-  address?: string;
-  name?: string;
-}
-
-interface Attendee {
-  emailAddress?: AttendeeEmail;
-  type?: string;
-  status?: { response?: string; time?: string };
-}
-
-function pickAttendees(raw: unknown[]): Array<Record<string, unknown>> {
+function pickAttendees(raw: GraphAttendee[]): Array<Record<string, unknown>> {
   return raw.map((att) => {
-    const a = att as Attendee;
     return {
-      name: a.emailAddress?.name,
-      email: a.emailAddress?.address,
-      type: a.type,
-      response: a.status?.response,
+      name: att.emailAddress?.name,
+      email: att.emailAddress?.address,
+      type: att.type,
+      response: att.status?.response,
     };
   });
 }
 
-export function pickEvent(event: Record<string, unknown>, includeFullPayload: boolean): Record<string, unknown> {
+export function pickEvent(event: GraphEvent, includeFullPayload: boolean): Record<string, unknown> {
   const attendees = Array.isArray(event.attendees) ? event.attendees : [];
   const isOnline = event.isOnlineMeeting === true || Boolean(event.onlineMeeting);
-  const minimal = {
+  const minimal: Record<string, unknown> = {
     id: event.id,
     subject: event.subject,
-    start: (event.start as { dateTime?: string; timeZone?: string } | undefined)?.dateTime,
-    end: (event.end as { dateTime?: string; timeZone?: string } | undefined)?.dateTime,
-    organizer: (event.organizer as { emailAddress?: { address?: string; name?: string } } | undefined)?.emailAddress,
-    attendee_count: attendees.length,
-    location: (event.location as { displayName?: string } | undefined)?.displayName,
+    start: event.start?.dateTime,
+    end: event.end?.dateTime,
+    organizer: event.organizer?.emailAddress,
+    location: event.location?.displayName,
     is_online_meeting: isOnline,
     web_link: event.webLink,
-    teams_join_url: (event.onlineMeeting as { joinUrl?: string } | undefined)?.joinUrl,
+    teams_join_url: event.onlineMeeting?.joinUrl,
   };
+  if (includeFullPayload) minimal.attendee_count = attendees.length;
   if (!includeFullPayload) return minimal;
   return {
     ...minimal,
@@ -138,45 +129,46 @@ export function pickEvent(event: Record<string, unknown>, includeFullPayload: bo
   };
 }
 
-const CALENDAR_VIEW_SELECT = [
+export const EVENT_MINIMAL_SELECT = [
   'id',
   'subject',
   'start',
   'end',
   'location',
   'organizer',
-  'attendees',
   'isOnlineMeeting',
   'onlineMeeting',
   'webLink',
+].join(',');
+
+export const EVENT_FULL_SELECT = [
+  EVENT_MINIMAL_SELECT,
+  'attendees',
+  'responseStatus',
   'bodyPreview',
 ].join(',');
 
-/** Fetch events in a date range using the CalendarView API (expands recurring events).
- *
- * The Graph CalendarView API always interprets startDateTime/endDateTime as UTC.
- * If the caller passes naive (no-offset) local datetimes, we convert them to UTC
- * using the configured timezone offset so the query covers the correct local day.
- * The Prefer header still requests event times in the local timezone for display.
- */
+/** CalendarView expands recurring events and expects UTC boundaries. */
 export async function calendarView(
   startDateTime: string,
   endDateTime: string,
   top: number,
   timezone?: string,
   mailboxUser?: string,
+  detailLevel: EventDetailLevel = 'full',
 ): Promise<Record<string, unknown>[]> {
   const windowsTz = resolveTimezone(timezone);
   const utcStart = localToUtc(startDateTime, timezone);
   const utcEnd = localToUtc(endDateTime, timezone);
+  const includeFullPayload = detailLevel === 'full';
   const response = await getGraph()
     .api(graphMailboxPath('/calendarView', mailboxUser))
     .header('Prefer', `outlook.timezone="${windowsTz}"`)
     .query({ startDateTime: utcStart, endDateTime: utcEnd })
-    .select(CALENDAR_VIEW_SELECT)
+    .select(includeFullPayload ? EVENT_FULL_SELECT : EVENT_MINIMAL_SELECT)
     .top(top)
     .orderby('start/dateTime')
     .get();
-  const events = (response as { value?: Array<Record<string, unknown>> }).value ?? [];
-  return events.map((e) => pickEvent(e, true));
+  const events = (response as GraphCollectionResponse<GraphEvent>).value ?? [];
+  return events.map((e) => pickEvent(e, includeFullPayload));
 }

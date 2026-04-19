@@ -1,23 +1,44 @@
 import { z } from 'zod';
-import { isLoggedIn } from '../auth/index.js';
-import { ok, fail } from '../utils/helpers.js';
-import { graphCache } from '../utils/cache.js';
 import { resolveMeeting, listMeetingTranscripts, getMeetingTranscript, getTranscriptContent, pickTranscript } from '../graph/teams.js';
-import type { ToolSpec } from '../utils/types.js';
+import { ok, fail } from './results.js';
+import { requireLoggedIn, readThroughGraphCache, GRAPH_CACHE_TTL_MS } from './shared.js';
+import { defineTool } from './types.js';
+import type { ToolSpec, ToolSuccess } from './types.js';
 
-const CACHE_TTL_MS = 30_000;
+type GraphHttpErrorLike = {
+  statusCode?: unknown;
+  status?: unknown;
+  code?: unknown;
+};
 
-/** Map Graph error status codes / messages to structured unavailability reasons. */
 function transcriptUnavailableReason(err: unknown): string | null {
-  const message = err instanceof Error ? err.message : String(err);
-  if (message.includes('404') || message.includes('not found')) return 'transcription_not_enabled';
-  if (message.includes('403') || message.includes('Forbidden')) return 'no_permission';
-  if (message.includes('410') || message.includes('Gone')) return 'meeting_expired';
+  const details = err as GraphHttpErrorLike | undefined;
+  const status = typeof details?.statusCode === 'number' ? details.statusCode : typeof details?.status === 'number' ? details.status : undefined;
+  const code = typeof details?.code === 'string' ? details.code : undefined;
+  if (status === 404 || code === 'NotFound') return 'transcription_not_enabled';
+  if (status === 403 || code === 'Forbidden') return 'no_permission';
+  if (status === 410 || code === 'Gone') return 'meeting_expired';
   return null;
 }
 
+async function withTranscriptAvailability<T>(message: string, details: Record<string, string>, loader: () => Promise<T>) {
+  try {
+    return await loader();
+  } catch (err) {
+    const reason = transcriptUnavailableReason(err);
+    if (reason) {
+      return ok(message, { available: false, reason, ...details });
+    }
+    throw err;
+  }
+}
+
+function isToolSuccess(value: unknown): value is ToolSuccess {
+  return typeof value === 'object' && value !== null && 'structuredContent' in value && 'content' in value;
+}
+
 export const teamsMeetingTools: ToolSpec[] = [
-  {
+  defineTool({
     name: 'resolve_meeting',
     description:
       'Resolve a Teams meeting joinWebUrl to a meeting ID. Best-effort — may fail if the meeting ' +
@@ -29,13 +50,11 @@ export const teamsMeetingTools: ToolSpec[] = [
       })
       .strict(),
     run: async (params) => {
-      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
-      const joinWebUrl = String(params.join_web_url);
+      await requireLoggedIn();
+      const joinWebUrl = params.join_web_url;
 
       const cacheKey = `meeting:${joinWebUrl}`;
-      const cached = graphCache.get(cacheKey) as Record<string, unknown> | null | undefined;
-      const meeting = cached !== undefined ? cached : await resolveMeeting(joinWebUrl);
-      if (cached === undefined) graphCache.set(cacheKey, meeting as Record<string, unknown> | null, CACHE_TTL_MS);
+      const meeting = await readThroughGraphCache(cacheKey, GRAPH_CACHE_TTL_MS, () => resolveMeeting(joinWebUrl));
 
       if (!meeting) {
         return fail(
@@ -56,8 +75,8 @@ export const teamsMeetingTools: ToolSpec[] = [
         chat_info: meeting.chatInfo,
       });
     },
-  },
-  {
+  }),
+  defineTool({
     name: 'list_meeting_transcripts',
     description:
       'List transcripts for a Teams meeting. Returns transcript metadata (not content). ' +
@@ -69,27 +88,16 @@ export const teamsMeetingTools: ToolSpec[] = [
       })
       .strict(),
     run: async (params) => {
-      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
-      const meetingId = String(params.meeting_id);
+      await requireLoggedIn();
+      const meetingId = params.meeting_id;
 
       const cacheKey = `transcripts:${meetingId}`;
-      const cached = graphCache.get(cacheKey) as { transcripts: Record<string, unknown>[]; count: number } | undefined;
+      const unavailable = await withTranscriptAvailability('Transcripts not available.', { meeting_id: meetingId }, () =>
+        readThroughGraphCache(cacheKey, GRAPH_CACHE_TTL_MS, () => listMeetingTranscripts(meetingId)),
+      );
+      if (isToolSuccess(unavailable)) return unavailable;
 
-      let result: { transcripts: Record<string, unknown>[]; count: number };
-      try {
-        result = cached ?? (await listMeetingTranscripts(meetingId));
-        if (!cached) graphCache.set(cacheKey, result, CACHE_TTL_MS);
-      } catch (err) {
-        const reason = transcriptUnavailableReason(err);
-        if (reason) {
-          return ok('Transcripts not available.', {
-            available: false,
-            reason,
-            meeting_id: meetingId,
-          });
-        }
-        throw err;
-      }
+      const result = unavailable;
 
       const transcripts = result.transcripts.map((t) => pickTranscript(t));
       return ok(`${transcripts.length} transcript(s) found.`, {
@@ -99,8 +107,8 @@ export const teamsMeetingTools: ToolSpec[] = [
         transcripts,
       });
     },
-  },
-  {
+  }),
+  defineTool({
     name: 'get_meeting_transcript',
     description:
       'Get metadata for a specific meeting transcript. Returns transcript details without content. ' +
@@ -112,34 +120,22 @@ export const teamsMeetingTools: ToolSpec[] = [
       })
       .strict(),
     run: async (params) => {
-      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
-      const meetingId = String(params.meeting_id);
-      const transcriptId = String(params.transcript_id);
+      await requireLoggedIn();
+      const meetingId = params.meeting_id;
+      const transcriptId = params.transcript_id;
 
       const cacheKey = `transcript:${meetingId}:${transcriptId}`;
-      const cached = graphCache.get(cacheKey) as Record<string, unknown> | undefined;
+      const unavailable = await withTranscriptAvailability('Transcript not available.', { meeting_id: meetingId, transcript_id: transcriptId }, () =>
+        readThroughGraphCache(cacheKey, GRAPH_CACHE_TTL_MS, () => getMeetingTranscript(meetingId, transcriptId)),
+      );
+      if (isToolSuccess(unavailable)) return unavailable;
 
-      let transcript: Record<string, unknown>;
-      try {
-        transcript = cached ?? (await getMeetingTranscript(meetingId, transcriptId));
-        if (!cached) graphCache.set(cacheKey, transcript, CACHE_TTL_MS);
-      } catch (err) {
-        const reason = transcriptUnavailableReason(err);
-        if (reason) {
-          return ok('Transcript not available.', {
-            available: false,
-            reason,
-            meeting_id: meetingId,
-            transcript_id: transcriptId,
-          });
-        }
-        throw err;
-      }
+      const transcript = unavailable;
 
       return ok('Transcript metadata retrieved.', pickTranscript(transcript));
     },
-  },
-  {
+  }),
+  defineTool({
     name: 'get_transcript_content',
     description:
       'Get the WebVTT content of a meeting transcript. Returns plain text with timestamps and ' +
@@ -153,26 +149,17 @@ export const teamsMeetingTools: ToolSpec[] = [
       })
       .strict(),
     run: async (params) => {
-      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
-      const meetingId = String(params.meeting_id);
-      const transcriptId = String(params.transcript_id);
-      const maxChars = typeof params.max_chars === 'number' ? params.max_chars : undefined;
+      await requireLoggedIn();
+      const meetingId = params.meeting_id;
+      const transcriptId = params.transcript_id;
+      const maxChars = params.max_chars;
 
-      let vttContent: string;
-      try {
-        vttContent = await getTranscriptContent(meetingId, transcriptId);
-      } catch (err) {
-        const reason = transcriptUnavailableReason(err);
-        if (reason) {
-          return ok('Transcript content not available.', {
-            available: false,
-            reason,
-            meeting_id: meetingId,
-            transcript_id: transcriptId,
-          });
-        }
-        throw err;
-      }
+      const unavailable = await withTranscriptAvailability('Transcript content not available.', { meeting_id: meetingId, transcript_id: transcriptId }, () =>
+        getTranscriptContent(meetingId, transcriptId),
+      );
+      if (isToolSuccess(unavailable)) return unavailable;
+
+      const vttContent = unavailable;
 
       // Transcripts are primary content — bypass the global hardMaxChars cap.
       // The schema already limits max_chars to 50 000; default to full content.
@@ -190,5 +177,5 @@ export const teamsMeetingTools: ToolSpec[] = [
         content_length: normalized.length,
       });
     },
-  },
+  }),
 ];

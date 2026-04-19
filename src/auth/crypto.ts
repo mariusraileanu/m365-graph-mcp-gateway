@@ -1,18 +1,4 @@
-/**
- * Token cache encryption — AES-256-GCM.
- *
- * This module encrypts/decrypts the MSAL token cache blob before it is
- * persisted to disk.  The encryption key is a 32-byte value supplied via
- * the GRAPH_TOKEN_CACHE_ENCRYPTION_KEY environment variable (base64-encoded).
- *
- * Wire format (all hex, colon-separated):
- *   v1:<iv>:<authTag>:<ciphertext>
- *
- * - v1        — version tag (allows future format changes)
- * - iv        — 12-byte random initialisation vector (hex)
- * - authTag   — 16-byte GCM authentication tag (hex)
- * - ciphertext — encrypted payload (hex)
- */
+/** AES-256-GCM token-cache helpers using the `v1:iv:tag:ciphertext` wire format. */
 
 import crypto from 'crypto';
 
@@ -101,10 +87,7 @@ export function parseEncryptionKey(raw: string | undefined): Buffer | null {
   return buf;
 }
 
-/**
- * Detect whether a cache file's content looks encrypted (starts with `v1:`).
- * Used for transparent migration from plaintext → encrypted caches.
- */
+/** Detect whether a cache blob uses the encrypted wire format. */
 export function isEncryptedCache(content: string): boolean {
   return content.startsWith(`${VERSION}:`);
 }

@@ -4,9 +4,9 @@ import readline from 'readline';
 import { v4 as uuidv4 } from 'uuid';
 import { loadConfig } from '../config/index.js';
 import { resolveStoragePath } from './helpers.js';
-import type { AuditEntry } from './types.js';
+import type { AuditEntry } from './audit-types.js';
 
-export class AuditLogger {
+class AuditLogger {
   private logPath: string;
   private enabled: boolean;
 

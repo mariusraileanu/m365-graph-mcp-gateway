@@ -2,8 +2,8 @@ import fs from 'fs';
 import path from 'path';
 import yaml from 'yaml';
 import { z } from 'zod';
-import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import { parseObjectId } from '../utils/object-id.js';
 
 const ConfigSchema = z.object({
   azure: z.object({
@@ -78,24 +78,6 @@ const ConfigSchema = z.object({
 });
 
 export type Config = z.infer<typeof ConfigSchema>;
-export type AzureConfig = Config['azure'];
-export type GuardrailsConfig = Config['guardrails'];
-export type SafetyConfig = Config['safety'];
-export type OutputConfig = Config['output'];
-export type SearchConfig = Config['search'];
-export type CalendarConfig = Config['calendar'];
-export type StorageConfig = Config['storage'];
-export type ServerConfig = Config['server'];
-export type RetrievalConfig = Config['retrieval'];
-export type ParsersConfig = Config['parsers'];
-
-function normalizeAadObjectId(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-function isAadObjectId(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
-}
 
 function expandEnvVars(value: string): string {
   return value.replace(/\$\{([^}]+)\}/g, (_, key) => {
@@ -120,8 +102,7 @@ function expandEnvVarsInObject(obj: Record<string, unknown>): Record<string, unk
 }
 
 let cachedConfig: Config | null = null;
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname = import.meta.dirname;
 dotenv.config({ path: path.resolve(process.cwd(), '.env') });
 
 export function loadConfig(): Config {
@@ -154,8 +135,8 @@ export function loadConfig(): Config {
 
   const envExpectedAadObjectId = process.env.EXPECTED_AAD_OBJECT_ID;
   if (envExpectedAadObjectId) {
-    const normalized = normalizeAadObjectId(envExpectedAadObjectId);
-    if (!isAadObjectId(normalized)) {
+    const normalized = parseObjectId(envExpectedAadObjectId);
+    if (!normalized) {
       throw new Error('Invalid EXPECTED_AAD_OBJECT_ID — expected Entra object ID UUID');
     }
     const root = expanded as Record<string, Record<string, unknown>>;
@@ -169,14 +150,6 @@ export function loadConfig(): Config {
     throw new Error(`Invalid configuration:\n${issues}`);
   }
   const config = result.data;
-
-  // Fail fast on missing required env vars
-  if (!config.azure.clientId) {
-    throw new Error('GRAPH_MCP_CLIENT_ID is required. Set it in .env or as an environment variable.');
-  }
-  if (!config.azure.tenantId) {
-    throw new Error('GRAPH_MCP_TENANT_ID is required. Set it in .env or as an environment variable.');
-  }
 
   cachedConfig = config;
   return config;

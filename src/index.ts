@@ -30,7 +30,7 @@ async function main(): Promise<void> {
     });
   }
 
-  if (args.includes('--login') || args.includes('--login-interactive')) {
+  if (args.includes('--login')) {
     await login('interactive');
     log.info('Logged in', { user: (await currentUser()) || 'unknown' });
     return;

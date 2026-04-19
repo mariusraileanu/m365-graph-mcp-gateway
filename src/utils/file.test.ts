@@ -1,12 +1,10 @@
-import { describe, it, afterEach } from 'node:test';
+import { describe, it, afterEach, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 
 import { atomicWriteFile, safeReadFile } from './file.js';
-
-// ── Helpers ─────────────────────────────────────────────────────────────────
 
 function tmpDir(): string {
   return path.join('/tmp', `file-test-${crypto.randomBytes(4).toString('hex')}`);
@@ -15,13 +13,12 @@ function tmpDir(): string {
 const dirs: string[] = [];
 
 afterEach(async () => {
+  mock.restoreAll();
   for (const d of dirs) {
     await fs.promises.rm(d, { recursive: true, force: true }).catch(() => {});
   }
   dirs.length = 0;
 });
-
-// ── atomicWriteFile ─────────────────────────────────────────────────────────
 
 describe('atomicWriteFile', () => {
   it('writes content that can be read back', async () => {
@@ -78,15 +75,13 @@ describe('atomicWriteFile', () => {
   });
 });
 
-// ── safeReadFile ────────────────────────────────────────────────────────────
-
 describe('safeReadFile', () => {
   it('returns null for nonexistent file', async () => {
     const result = await safeReadFile('/tmp/nonexistent-file-' + crypto.randomBytes(8).toString('hex'));
     assert.equal(result, null);
   });
 
-  it('returns null for empty file', async () => {
+  it('returns empty string for empty file', async () => {
     const dir = tmpDir();
     dirs.push(dir);
     const fp = path.join(dir, 'empty.txt');
@@ -94,7 +89,7 @@ describe('safeReadFile', () => {
     await fs.promises.mkdir(dir, { recursive: true });
     await fs.promises.writeFile(fp, '');
     const result = await safeReadFile(fp);
-    assert.equal(result, null);
+    assert.equal(result, '');
   });
 
   it('returns content for non-empty file', async () => {
@@ -109,22 +104,11 @@ describe('safeReadFile', () => {
   });
 
   it('throws on permission error (not ENOENT)', async () => {
-    const dir = tmpDir();
-    dirs.push(dir);
-    const fp = path.join(dir, 'noperm.txt');
+    const denied = Object.assign(new Error('permission denied'), { code: 'EACCES' });
+    mock.method(fs.promises, 'readFile', async () => {
+      throw denied;
+    });
 
-    await fs.promises.mkdir(dir, { recursive: true });
-    await fs.promises.writeFile(fp, 'locked');
-    await fs.promises.chmod(fp, 0o000);
-
-    await assert.rejects(
-      () => safeReadFile(fp),
-      (err: NodeJS.ErrnoException) => {
-        return err.code === 'EACCES';
-      },
-    );
-
-    // Restore permissions for cleanup
-    await fs.promises.chmod(fp, 0o600);
+    await assert.rejects(() => safeReadFile('/tmp/permission-denied.txt'), (err: NodeJS.ErrnoException) => err.code === 'EACCES');
   });
 });

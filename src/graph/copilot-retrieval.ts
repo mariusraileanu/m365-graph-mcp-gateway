@@ -8,7 +8,7 @@
  * The $batch endpoint supports up to 20 requests per call.
  */
 
-import { getAccessToken } from '../auth/index.js';
+import { graphFetch } from './http.js';
 import { log } from '../utils/log.js';
 
 const GRAPH_BASE = 'https://graph.microsoft.com/v1.0';
@@ -38,9 +38,13 @@ export interface RetrievalResult {
   dataSource: RetrievalDataSource;
   hits: RetrievalHit[];
   hitCount: number;
+  error?: {
+    status?: number;
+    message: string;
+  };
 }
 
-export interface RetrievalOptions {
+interface RetrievalOptions {
   queryString: string;
   dataSource: RetrievalDataSource;
   filterExpression?: string;
@@ -81,30 +85,39 @@ function normalizeHit(raw: Record<string, unknown>): RetrievalHit {
   };
 }
 
+type GraphRetrievalResponse = {
+  value?: Array<Record<string, unknown>>;
+};
+
+type GraphBatchItemResponse = {
+  id: string;
+  status: number;
+  body?: GraphRetrievalResponse & {
+    error?: {
+      message?: unknown;
+    };
+  };
+};
+
+type GraphBatchResponse = {
+  responses?: GraphBatchItemResponse[];
+};
+
 /**
  * Single-query retrieval — POST /v1.0/copilot/retrieval
  */
 export async function retrieveContext(options: RetrievalOptions): Promise<RetrievalResult> {
-  const token = await getAccessToken();
   const body = buildRequestBody(options);
 
   log.debug('copilot-retrieval', { queryString: options.queryString, dataSource: options.dataSource });
 
-  const response = await fetch(`${GRAPH_BASE}${RETRIEVAL_PATH}`, {
+  const response = await graphFetch(`${GRAPH_BASE}${RETRIEVAL_PATH}`, 'UPSTREAM_ERROR: Copilot Retrieval API failed', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
 
-  if (!response.ok) {
-    const errText = await response.text().catch(() => '');
-    throw new Error(`UPSTREAM_ERROR: Copilot Retrieval API failed (${response.status}): ${errText}`);
-  }
-
-  const data = (await response.json()) as { value?: Array<Record<string, unknown>> };
+  const data = (await response.json()) as GraphRetrievalResponse;
   const rawHits = Array.isArray(data.value) ? data.value : [];
   const hits = rawHits.map(normalizeHit);
 
@@ -133,8 +146,6 @@ export async function retrieveContextBatch(
     throw new Error(`VALIDATION_ERROR: batch size ${queries.length} exceeds maximum of ${MAX_BATCH_SIZE}`);
   }
 
-  const token = await getAccessToken();
-
   const requests = queries.map((q, i) => {
     const body = buildRequestBody({
       queryString: q,
@@ -154,40 +165,46 @@ export async function retrieveContextBatch(
 
   log.debug('copilot-retrieval-batch', { queryCount: queries.length, dataSource });
 
-  const response = await fetch(`${GRAPH_BASE}${BATCH_PATH}`, {
+  const response = await graphFetch(`${GRAPH_BASE}${BATCH_PATH}`, 'UPSTREAM_ERROR: Graph $batch failed', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ requests }),
   });
 
-  if (!response.ok) {
-    const errText = await response.text().catch(() => '');
-    throw new Error(`UPSTREAM_ERROR: Graph $batch failed (${response.status}): ${errText}`);
-  }
+  const batchResponse = (await response.json()) as GraphBatchResponse;
+  const responsesById = new Map((batchResponse.responses ?? []).map((item) => [item.id, item]));
 
-  const batchResponse = (await response.json()) as {
-    responses?: Array<{
-      id: string;
-      status: number;
-      body?: { value?: Array<Record<string, unknown>> };
-    }>;
-  };
+  return queries.map((queryString, i) => {
+    const responseId = String(i);
+    const item = responsesById.get(responseId);
 
-  const responses = batchResponse.responses ?? [];
-
-  // Sort by id to match input query order
-  responses.sort((a, b) => Number(a.id) - Number(b.id));
-
-  return responses.map((r, i) => {
-    const queryString = queries[i] ?? '';
-    if (r.status !== 200) {
-      log.warn('copilot-retrieval-batch-item-error', { id: r.id, status: r.status, queryString });
-      return { queryString, dataSource, hits: [], hitCount: 0 };
+    if (!item) {
+      log.warn('copilot-retrieval-batch-item-missing', { id: responseId, queryString });
+      return {
+        queryString,
+        dataSource,
+        hits: [],
+        hitCount: 0,
+        error: { message: 'Missing batch item response' },
+      };
     }
-    const rawHits = Array.isArray(r.body?.value) ? r.body!.value : [];
+
+    if (item.status !== 200) {
+      const message =
+        typeof item.body?.error?.message === 'string' && item.body.error.message.trim()
+          ? item.body.error.message
+          : `Copilot Retrieval batch item failed (${item.status})`;
+      log.warn('copilot-retrieval-batch-item-error', { id: item.id, status: item.status, queryString, message });
+      return {
+        queryString,
+        dataSource,
+        hits: [],
+        hitCount: 0,
+        error: { status: item.status, message },
+      };
+    }
+
+    const rawHits = Array.isArray(item.body?.value) ? item.body.value : [];
     const hits = rawHits.map(normalizeHit);
     return { queryString, dataSource, hits, hitCount: hits.length };
   });

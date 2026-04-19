@@ -1,5 +1,6 @@
 import { describe, it, mock, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { createSilentLogMock, createTestConfig } from '../test-support/tool-test-helpers.js';
 
 // ── Module-level mocks ──────────────────────────────────────────────────────
 
@@ -7,21 +8,7 @@ let loggedIn = true;
 
 mock.module('../config/index.js', {
   namedExports: {
-    loadConfig: () => ({
-      azure: { clientId: 'test', tenantId: 'test' },
-      scopes: ['Files.Read.All', 'Sites.Read.All'],
-      guardrails: {
-        email: { allowDomains: ['example.com'], requireDraftApproval: true, stripSensitiveFromLogs: false },
-        audit: { enabled: false, logPath: '/tmp/audit.jsonl', retentionDays: 90 },
-      },
-      safety: { requireConfirmForWrites: true },
-      output: { defaultIncludeFull: false, defaultMaxChars: 4000, hardMaxChars: 20000 },
-      search: { defaultTop: 10, maxTop: 50 },
-      calendar: { defaultTimezone: 'UTC' },
-      storage: { tokenPath: 'graph-mcp/tokens' },
-      retrieval: { defaultDataSource: 'sharePoint', defaultMaxResults: 10 },
-      parsers: { defaultMaxChars: 50000 },
-    }),
+    loadConfig: () => createTestConfig({ scopes: ['Files.Read.All', 'Sites.Read.All'] }),
   },
 });
 
@@ -36,7 +23,7 @@ mock.module('../auth/index.js', {
 
 mock.module('../utils/log.js', {
   namedExports: {
-    log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+    log: createSilentLogMock(),
   },
 });
 
@@ -272,6 +259,28 @@ describe('retrieve_context tools', () => {
 
       const structured = result.structuredContent as Record<string, unknown>;
       assert.equal(structured.total_hits, 5);
+    });
+
+    it('includes per-query batch errors when returned by graph layer', async () => {
+      retrieveContextBatchResult = [
+        { queryString: 'q1', dataSource: 'sharePoint', hitCount: 0, hits: [], error: { status: 429, message: 'Too many requests' } },
+        { queryString: 'q2', dataSource: 'sharePoint', hitCount: 1, hits: [{ webUrl: 'https://x', resourceType: 'file', resourceMetadata: {}, sensitivityLabel: null, extracts: [] }] },
+      ];
+
+      const result = await retrieveContextMultiTool.run({
+        queries: ['q1', 'q2'],
+        data_source: 'sharePoint',
+      });
+
+      const structured = result.structuredContent as Record<string, unknown>;
+      const errors = structured.errors as Array<Record<string, unknown>>;
+      assert.equal(errors.length, 1);
+      assert.equal(errors[0]!.query, 'q1');
+      assert.equal(errors[0]!.status, 429);
+      assert.equal(errors[0]!.message, 'Too many requests');
+
+      const results = structured.results as Array<Record<string, unknown>>;
+      assert.deepEqual(results[0]!.error, { status: 429, message: 'Too many requests' });
     });
   });
 });

@@ -1,12 +1,87 @@
-import { getGraph, getAccessToken } from '../auth/index.js';
+import { getGraph } from '../auth/index.js';
 import { compactText, stripHtml, escapeODataString } from '../utils/helpers.js';
 import { loadConfig } from '../config/index.js';
+import { graphFetch } from './http.js';
+import type { GraphCollectionResponse } from './types.js';
+
+type GraphMeetingInfo = {
+  joinWebUrl?: string;
+  calendarEventId?: string;
+};
+
+type GraphLastMessagePreview = {
+  body?: {
+    content?: string;
+  };
+  createdDateTime?: string;
+};
+
+type GraphChat = {
+  id?: string;
+  topic?: string;
+  chatType?: string;
+  createdDateTime?: string;
+  lastUpdatedDateTime?: string;
+  onlineMeetingInfo?: GraphMeetingInfo;
+  lastMessagePreview?: GraphLastMessagePreview;
+  tenantId?: string;
+  webUrl?: string;
+  members?: Array<{ displayName?: string; id?: string }>;
+};
+
+type GraphMessageUser = {
+  displayName?: string;
+  id?: string;
+};
+
+type GraphMessageFrom = {
+  user?: GraphMessageUser;
+};
+
+type GraphMessageBody = {
+  contentType?: string;
+  content?: string;
+};
+
+type GraphChatMessage = {
+  id?: string;
+  messageType?: string;
+  from?: GraphMessageFrom;
+  body?: GraphMessageBody;
+  createdDateTime?: string;
+  lastModifiedDateTime?: string;
+  importance?: string;
+  webUrl?: string;
+  attachments?: Array<Record<string, unknown>>;
+};
+
+type GraphMeetingOrganizer = {
+  user?: GraphMessageUser;
+};
+
+type GraphTranscript = {
+  id?: string;
+  meetingId?: string;
+  createdDateTime?: string;
+  endDateTime?: string;
+  contentCorrelationId?: string;
+  meetingOrganizer?: GraphMeetingOrganizer;
+};
+
+type GraphOnlineMeeting = {
+  id?: string;
+  subject?: string;
+  startDateTime?: string;
+  endDateTime?: string;
+  joinWebUrl?: string;
+  chatInfo?: { threadId?: string; messageId?: string };
+};
 
 // ── Picker functions ────────────────────────────────────────────────────────
 
-export function pickChat(chat: Record<string, unknown>, includeFullPayload: boolean): Record<string, unknown> {
-  const meetingInfo = chat.onlineMeetingInfo as { joinWebUrl?: string; calendarEventId?: string } | undefined;
-  const lastPreview = chat.lastMessagePreview as { body?: { content?: string }; createdDateTime?: string } | undefined;
+export function pickChat(chat: GraphChat, includeFullPayload: boolean): Record<string, unknown> {
+  const meetingInfo = chat.onlineMeetingInfo;
+  const lastPreview = chat.lastMessagePreview;
   const minimal: Record<string, unknown> = {
     id: chat.id,
     topic: chat.topic,
@@ -31,10 +106,10 @@ export function pickChat(chat: Record<string, unknown>, includeFullPayload: bool
   };
 }
 
-export function pickMessage(message: Record<string, unknown>, includeFullPayload: boolean): Record<string, unknown> {
-  const from = message.from as { user?: { displayName?: string; id?: string } } | undefined;
-  const body = message.body as { contentType?: string; content?: string } | undefined;
-  const bodyContent = body?.content || '';
+export function pickMessage(message: GraphChatMessage, includeFullPayload: boolean): Record<string, unknown> {
+  const from = message.from;
+  const body = message.body;
+  const bodyContent = body?.content ?? '';
   const isHtml = body?.contentType === 'html';
   const plainText = isHtml ? stripHtml(bodyContent) : bodyContent;
   const compact = compactText(plainText, loadConfig().output.defaultMaxChars);
@@ -58,8 +133,8 @@ export function pickMessage(message: Record<string, unknown>, includeFullPayload
   };
 }
 
-export function pickTranscript(transcript: Record<string, unknown>): Record<string, unknown> {
-  const organizer = transcript.meetingOrganizer as { user?: { displayName?: string; id?: string } } | undefined;
+export function pickTranscript(transcript: GraphTranscript): Record<string, unknown> {
+  const organizer = transcript.meetingOrganizer;
   return {
     id: transcript.id,
     meeting_id: transcript.meetingId,
@@ -77,7 +152,7 @@ export async function listChats(
   top: number,
   chatType?: string,
   expandMembers?: boolean,
-): Promise<{ chats: Record<string, unknown>[]; count: number }> {
+): Promise<{ chats: GraphChat[]; count: number }> {
   let req = getGraph()
     .api('/me/chats')
     .select('id,topic,chatType,createdDateTime,lastUpdatedDateTime,onlineMeetingInfo,lastMessagePreview,tenantId,webUrl')
@@ -92,84 +167,70 @@ export async function listChats(
   }
 
   const response = await req.get();
-  const chats = (response as { value?: Array<Record<string, unknown>> }).value ?? [];
+  const chats = (response as GraphCollectionResponse<GraphChat>).value ?? [];
   return { chats, count: chats.length };
 }
 
-export async function getChat(chatId: string): Promise<Record<string, unknown>> {
-  return await getGraph()
+export async function getChat(chatId: string): Promise<GraphChat> {
+  return (await getGraph()
     .api(`/me/chats/${encodeURIComponent(chatId)}`)
     .select('id,topic,chatType,createdDateTime,lastUpdatedDateTime,onlineMeetingInfo,tenantId,webUrl')
     .expand('members')
-    .get();
+    .get()) as GraphChat;
 }
 
-export async function listChatMessages(chatId: string, top: number): Promise<{ messages: Record<string, unknown>[]; count: number }> {
+export async function listChatMessages(chatId: string, top: number): Promise<{ messages: GraphChatMessage[]; count: number }> {
   const response = await getGraph()
     .api(`/me/chats/${encodeURIComponent(chatId)}/messages`)
     .top(top)
     .get();
-  const messages = (response as { value?: Array<Record<string, unknown>> }).value ?? [];
+  const messages = (response as GraphCollectionResponse<GraphChatMessage>).value ?? [];
   return { messages, count: messages.length };
 }
 
-export async function getChatMessage(chatId: string, messageId: string): Promise<Record<string, unknown>> {
-  return await getGraph()
+export async function getChatMessage(chatId: string, messageId: string): Promise<GraphChatMessage> {
+  return (await getGraph()
     .api(`/me/chats/${encodeURIComponent(chatId)}/messages/${encodeURIComponent(messageId)}`)
-    .get();
+    .get()) as GraphChatMessage;
 }
 
-export async function sendChatMessage(chatId: string, content: string): Promise<Record<string, unknown>> {
-  return await getGraph()
+export async function sendChatMessage(chatId: string, content: string): Promise<GraphChatMessage> {
+  return (await getGraph()
     .api(`/chats/${encodeURIComponent(chatId)}/messages`)
-    .post({ body: { content } });
+    .post({ body: { content } })) as GraphChatMessage;
 }
 
 // ── Meeting API calls ───────────────────────────────────────────────────────
 
-export async function resolveMeeting(joinWebUrl: string): Promise<Record<string, unknown> | null> {
+export async function resolveMeeting(joinWebUrl: string): Promise<GraphOnlineMeeting | null> {
   // The /me/onlineMeetings endpoint does NOT support $select — it returns
   // "Query option 'Select' is not allowed" if the SDK adds one.  Using a raw
   // fetch with only $filter (the one supported query option) avoids the issue.
-  const token = await getAccessToken();
   const filter = `JoinWebUrl eq '${escapeODataString(joinWebUrl)}'`;
   const endpoint = `https://graph.microsoft.com/v1.0/me/onlineMeetings?$filter=${encodeURIComponent(filter)}`;
-  const res = await fetch(endpoint, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new Error(`UPSTREAM_ERROR: resolve meeting failed (${res.status}) ${body.slice(0, 300)}`);
-  }
-  const data = (await res.json()) as { value?: Array<Record<string, unknown>> };
+  const res = await graphFetch(endpoint, 'UPSTREAM_ERROR: resolve meeting failed');
+  const data = (await res.json()) as GraphCollectionResponse<GraphOnlineMeeting>;
   return data.value?.[0] ?? null;
 }
 
-export async function listMeetingTranscripts(meetingId: string): Promise<{ transcripts: Record<string, unknown>[]; count: number }> {
+export async function listMeetingTranscripts(meetingId: string): Promise<{ transcripts: GraphTranscript[]; count: number }> {
   const response = await getGraph()
     .api(`/me/onlineMeetings/${encodeURIComponent(meetingId)}/transcripts`)
     .get();
-  const transcripts = (response as { value?: Array<Record<string, unknown>> }).value ?? [];
+  const transcripts = (response as GraphCollectionResponse<GraphTranscript>).value ?? [];
   return { transcripts, count: transcripts.length };
 }
 
-export async function getMeetingTranscript(meetingId: string, transcriptId: string): Promise<Record<string, unknown>> {
-  return await getGraph()
+export async function getMeetingTranscript(meetingId: string, transcriptId: string): Promise<GraphTranscript> {
+  return (await getGraph()
     .api(`/me/onlineMeetings/${encodeURIComponent(meetingId)}/transcripts/${encodeURIComponent(transcriptId)}`)
-    .get();
+    .get()) as GraphTranscript;
 }
 
 export async function getTranscriptContent(meetingId: string, transcriptId: string): Promise<string> {
-  const token = await getAccessToken();
   const endpoint = `https://graph.microsoft.com/v1.0/me/onlineMeetings/${encodeURIComponent(meetingId)}/transcripts/${encodeURIComponent(transcriptId)}/content`;
-  const response = await fetch(endpoint, {
-    headers: {
-      Authorization: `Bearer ${token}`,
-      Accept: 'text/vtt',
-    },
+  const response = await graphFetch(endpoint, 'UPSTREAM_ERROR: transcript content fetch failed', {
+    headers: { Accept: 'text/vtt' },
   });
-  if (!response.ok) {
-    throw new Error(`UPSTREAM_ERROR: transcript content fetch failed (${response.status})`);
-  }
   return await response.text();
 }

@@ -72,7 +72,7 @@ log "find — mail"
 R="$(mcp_tool 3 find '{"query":"budget","entity_types":["mail"],"top":3}')"
 assert_ok "find mail" "$R"
 
-# ─── find (files via Copilot Retrieval) ──────────────────
+# ─── find (files via graph-search) ───────────────────────
 log "find — files"
 R="$(mcp_tool 4 find '{"query":"budget","entity_types":["files"],"top":3}')"
 assert_ok "find files" "$R"
@@ -193,16 +193,6 @@ if [[ -n "$EVENT_ID" ]]; then
 else
   warn "Skipping event tests (no event_id)"
 fi
-
-# ─── summarize ───────────────────────────────────────────
-log "summarize"
-R="$(mcp_tool 30 summarize '{"query":"project update"}')"
-assert_ok "summarize" "$R"
-
-# ─── prepare_meeting ─────────────────────────────────────
-log "prepare_meeting"
-R="$(mcp_tool 31 prepare_meeting '{"subject":"upcoming meeting"}')"
-assert_ok "prepare_meeting" "$R"
 
 # ─── audit_list ──────────────────────────────────────────
 log "audit_list"

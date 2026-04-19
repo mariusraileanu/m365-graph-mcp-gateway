@@ -73,7 +73,7 @@ docker-logs:
 	docker compose logs -f m365-graph-mcp-gateway
 
 smoke:
-	bash scripts/test-all-tools.sh
+	node dist/index.js --smoke
 
 # ── Deploy (sources .env.azure.$(ENV)) ───────────────────────────────────
 

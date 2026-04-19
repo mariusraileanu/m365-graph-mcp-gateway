@@ -75,12 +75,6 @@ mock.module('../utils/file.js', {
   },
 });
 
-mock.module('../mcp/server.js', {
-  namedExports: {
-    sendNotification: () => {},
-  },
-});
-
 mock.module('@azure/msal-node', {
   namedExports: {
     PublicClientApplication: class {

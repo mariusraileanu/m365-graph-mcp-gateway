@@ -1,11 +1,28 @@
 import http from 'http';
 import crypto from 'crypto';
 import { zodToJsonSchema } from 'zod-to-json-schema';
-import { currentUser, isLoggedIn } from '../auth/index.js';
+import { currentUser, isLoggedIn, setAuthNotifier } from '../auth/index.js';
 import { loadConfig } from '../config/index.js';
+import {
+  VALID_LOG_LEVELS,
+  sendNotification,
+  setClientMinLogLevel,
+  resetLoggingState,
+  setStdioMode,
+} from './logging.js';
 import { tools, callTool } from '../tools/index.js';
 import { log } from '../utils/log.js';
-import type { MCPRequest, MCPResponse, MCPMessage } from '../utils/types.js';
+import type { MCPRequest, MCPResponse, MCPMessage } from './types.js';
+
+export { sendNotification } from './logging.js';
+
+setAuthNotifier((info) => {
+  sendNotification('notice', 'auth', {
+    message: info.message,
+    verification_uri: info.verificationUri,
+    user_code: info.userCode,
+  });
+});
 
 const MAX_REQUEST_BYTES = 1_048_576; // 1 MB
 
@@ -25,51 +42,6 @@ const SECURITY_HEADERS: Record<string, string> = {
   'X-Frame-Options': 'DENY',
   'Cache-Control': 'no-store',
 };
-
-// ── MCP Logging (server → client notifications) ───────────────────────────
-
-/** RFC 5424 severity levels supported by the MCP logging spec. */
-type McpLogLevel = 'debug' | 'info' | 'notice' | 'warning' | 'error' | 'critical' | 'alert' | 'emergency';
-
-const LOG_LEVEL_SEVERITY: Record<McpLogLevel, number> = {
-  debug: 0,
-  info: 1,
-  notice: 2,
-  warning: 3,
-  error: 4,
-  critical: 5,
-  alert: 6,
-  emergency: 7,
-};
-
-const VALID_LOG_LEVELS = new Set<string>(Object.keys(LOG_LEVEL_SEVERITY));
-
-/** Current minimum log level requested by the client via logging/setLevel. */
-let clientMinLogLevel: McpLogLevel = 'debug';
-
-/** Whether we are running in stdio transport mode (can push notifications). */
-let stdioMode = false;
-
-/**
- * Send an MCP logging notification (notifications/message) to the client.
- *
- * Only works in stdio transport mode — in HTTP mode the notification is
- * silently dropped because there is no persistent channel to push to.
- * Also filtered by the minimum log level set by the client.
- */
-export function sendNotification(level: McpLogLevel, logger: string, data: unknown): void {
-  if (!stdioMode) return;
-
-  // Filter by client-requested minimum log level
-  if (LOG_LEVEL_SEVERITY[level] < LOG_LEVEL_SEVERITY[clientMinLogLevel]) return;
-
-  const notification = {
-    jsonrpc: '2.0' as const,
-    method: 'notifications/message',
-    params: { level, logger, data },
-  };
-  process.stdout.write(JSON.stringify(notification) + '\n');
-}
 
 // ── Rate limiter (sliding window) ──────────────────────────────────────────
 
@@ -130,13 +102,12 @@ export function _resetRateLimits(): void {
 
 /** Reset logging state. Exported for testing only. */
 export function _resetLoggingState(): void {
-  clientMinLogLevel = 'debug';
-  stdioMode = false;
+  resetLoggingState();
 }
 
 /** Enable stdio mode. Exported for testing only. */
 export function _setStdioMode(enabled: boolean): void {
-  stdioMode = enabled;
+  setStdioMode(enabled);
 }
 
 // ── In-flight request tracking (for notifications/cancelled) ───────────────
@@ -274,7 +245,7 @@ async function handleRequest(request: MCPRequest, signal?: AbortSignal): Promise
           },
         };
       }
-      clientMinLogLevel = level as McpLogLevel;
+      setClientMinLogLevel(level as Parameters<typeof setClientMinLogLevel>[0]);
       return { jsonrpc: '2.0', id, result: {} };
     }
 
@@ -374,7 +345,7 @@ async function processMessage(raw: unknown): Promise<MCPResponse | null> {
 }
 
 export function startMcpStdioServer(): void {
-  stdioMode = true;
+  setStdioMode(true);
   let buffer = '';
   let bufferBytes = 0;
   process.stdin.setEncoding('utf8');
@@ -399,6 +370,8 @@ export function startMcpStdioServer(): void {
         const raw = JSON.parse(line) as unknown;
         processMessage(raw).then((res) => {
           if (res) console.log(JSON.stringify(res));
+        }).catch(() => {
+          console.log(JSON.stringify({ jsonrpc: '2.0', id: null, error: { code: -32603, message: 'Internal error' } }));
         });
       } catch {
         // Parse error — send JSON-RPC -32700
@@ -476,7 +449,7 @@ export function startHttpServer(port = 3000): void {
       });
 
       req.on('error', (err) => {
-        console.warn('HTTP request stream error:', err.message);
+        log.warn('HTTP request stream error', { error: err.message });
         if (!res.headersSent) {
           res.writeHead(500, jsonHeaders());
           res.end(JSON.stringify({ error: 'Stream error' }));
@@ -485,21 +458,11 @@ export function startHttpServer(port = 3000): void {
 
       req.on('end', async () => {
         if (res.writableEnded) return;
+        let raw: unknown;
+
         try {
-          const raw = JSON.parse(body) as unknown;
-          const response = await processMessage(raw);
-          if (response) {
-            // JSON-RPC: always 200, even for method-level errors.
-            // Only HTTP-level issues (auth, body-too-large) use non-200 codes.
-            res.writeHead(200, jsonHeaders());
-            res.end(JSON.stringify(response));
-          } else {
-            // Notification — no response body, 204 No Content
-            res.writeHead(204, SECURITY_HEADERS);
-            res.end();
-          }
+          raw = JSON.parse(body) as unknown;
         } catch {
-          // JSON parse failure → JSON-RPC -32700
           res.writeHead(200, jsonHeaders());
           res.end(
             JSON.stringify({
@@ -508,6 +471,16 @@ export function startHttpServer(port = 3000): void {
               error: { code: -32700, message: 'Parse error: invalid JSON' },
             }),
           );
+          return;
+        }
+
+        const response = await processMessage(raw);
+        if (response) {
+          res.writeHead(200, jsonHeaders());
+          res.end(JSON.stringify(response));
+        } else {
+          res.writeHead(204, SECURITY_HEADERS);
+          res.end();
         }
       });
       return;

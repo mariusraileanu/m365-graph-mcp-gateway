@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 // ── Module-level mocks (must be set up before importing get.ts) ──────────────
 
-const graphGetCalls: Array<{ endpoint: string; headers: Record<string, string>; filter?: string }> = [];
+const graphGetCalls: Array<{ endpoint: string; headers: Record<string, string>; filter?: string; select?: string }> = [];
 let graphGetResponse: Record<string, unknown> | (() => Record<string, unknown>) = {};
 let loggedIn = true;
 
@@ -21,8 +21,6 @@ const cacheGetCalls: Array<{ key: string }> = [];
 const cacheSetCalls: Array<{ key: string; value: unknown; ttl: number }> = [];
 const cacheStore = new Map<string, unknown>();
 
-// Override global fetch
-const _originalFetch = globalThis.fetch;
 globalThis.fetch = (async (input: string | URL | Request) => {
   const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
   fetchCalls.push({ url });
@@ -39,6 +37,7 @@ function createChainableClient() {
   let currentEndpoint = '';
   const headers: Record<string, string> = {};
   let currentFilter = '';
+  let currentSelect = '';
   const chainable: Record<string, unknown> = {};
   chainable.api = (endpoint: string) => {
     currentEndpoint = endpoint;
@@ -48,7 +47,10 @@ function createChainableClient() {
     headers[key] = value;
     return chainable;
   };
-  chainable.select = () => chainable;
+  chainable.select = (value: string) => {
+    currentSelect = value;
+    return chainable;
+  };
   chainable.top = () => chainable;
   chainable.orderby = () => chainable;
   chainable.search = () => chainable;
@@ -58,7 +60,7 @@ function createChainableClient() {
     return chainable;
   };
   chainable.get = async () => {
-    graphGetCalls.push({ endpoint: currentEndpoint, headers: { ...headers }, filter: currentFilter || undefined });
+    graphGetCalls.push({ endpoint: currentEndpoint, headers: { ...headers }, filter: currentFilter || undefined, select: currentSelect || undefined });
     const resp = typeof graphGetResponse === 'function' ? graphGetResponse() : graphGetResponse;
     return resp;
   };
@@ -126,6 +128,8 @@ mock.module('../graph/mail.js', {
 const pickEventCalls: Array<{ event: Record<string, unknown>; includeFull: boolean }> = [];
 mock.module('../graph/calendar.js', {
   namedExports: {
+    EVENT_MINIMAL_SELECT: 'id,subject,start,end,location,organizer,isOnlineMeeting,onlineMeeting,webLink',
+    EVENT_FULL_SELECT: 'id,subject,start,end,location,organizer,isOnlineMeeting,onlineMeeting,webLink,attendees,responseStatus,bodyPreview',
     pickEvent: (event: Record<string, unknown>, includeFull: boolean) => {
       pickEventCalls.push({ event, includeFull });
       return { id: event.id, subject: event.subject, include_full: includeFull };
@@ -138,6 +142,27 @@ mock.module('../graph/calendar.js', {
 const pickFileCalls: Array<{ item: Record<string, unknown>; includeFull: boolean }> = [];
 mock.module('../graph/files.js', {
   namedExports: {
+    getDriveItem: async (driveId: string, itemId: string) => {
+      graphGetCalls.push({ endpoint: `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}`, headers: {} });
+      return typeof graphGetResponse === 'function' ? graphGetResponse() : graphGetResponse;
+    },
+    getDriveItemInfo: (item: Record<string, unknown>) => ({
+      name: String(item.name || 'unknown'),
+      size: Number(item.size || 0),
+      mimeType: typeof (item.file as { mimeType?: unknown } | undefined)?.mimeType === 'string'
+        ? ((item.file as { mimeType?: string }).mimeType as string)
+        : 'application/octet-stream',
+      downloadUrl: typeof item['@microsoft.graph.downloadUrl'] === 'string' ? item['@microsoft.graph.downloadUrl'] : null,
+      webUrl: typeof item.webUrl === 'string' ? item.webUrl : null,
+    }),
+    downloadDriveItemContent: async (driveId: string, itemId: string) => {
+      const url = `https://graph.microsoft.com/v1.0/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/content`;
+      fetchCalls.push({ url });
+      if (!fetchResponse.ok) {
+        throw new Error(`UPSTREAM_ERROR: file download failed (${fetchResponse.status})`);
+      }
+      return fetchResponse.buffer;
+    },
     pickFile: (item: Record<string, unknown>, includeFull: boolean) => {
       pickFileCalls.push({ item, includeFull });
       return {
@@ -255,6 +280,11 @@ describe('get_event', () => {
     assert.equal(graphGetCalls.length, 1);
     assert.ok(graphGetCalls[0]!.endpoint.includes('/me/events/evt-789'));
     assert.ok(graphGetCalls[0]!.headers['Prefer']?.includes('outlook.timezone'));
+    assert.equal(
+      graphGetCalls[0]!.select,
+      'id,subject,start,end,location,organizer,isOnlineMeeting,onlineMeeting,webLink',
+      'default event fetch should exclude attendees and other heavy fields',
+    );
     assert.equal(pickEventCalls.length, 1);
     assert.equal(pickEventCalls[0]!.includeFull, false);
   });
@@ -264,6 +294,11 @@ describe('get_event', () => {
     const result = await callGetEvent({ event_id: 'evt-abc', include_full: true });
 
     assert.ok(!('isError' in result));
+    assert.equal(
+      graphGetCalls[0]!.select,
+      'id,subject,start,end,location,organizer,isOnlineMeeting,onlineMeeting,webLink,attendees,responseStatus,bodyPreview',
+      'full event fetch should request attendees and rich details',
+    );
     assert.equal(pickEventCalls[0]!.includeFull, true);
     assert.deepStrictEqual(result.structuredContent, { id: 'evt-abc', subject: 'Full Event', include_full: true });
   });
@@ -303,7 +338,6 @@ describe('get_email_thread — with conversation_id', () => {
     assert.equal(structured.message_count, 2);
     assert.equal((structured.messages as unknown[]).length, 2);
 
-    // Verify filter was used
     assert.equal(graphGetCalls.length, 1);
     assert.ok(graphGetCalls[0]!.filter?.includes('conv-abc'));
   });
@@ -322,7 +356,6 @@ describe('get_email_thread — with conversation_id', () => {
     const structured = result.structuredContent as Record<string, unknown>;
     const messages = structured.messages as Array<Record<string, unknown>>;
     assert.equal(messages.length, 3);
-    // Verify oldest-first order
     assert.equal(messages[0]!.id, 'msg-1');
     assert.equal(messages[1]!.id, 'msg-2');
     assert.equal(messages[2]!.id, 'msg-3');
@@ -345,10 +378,8 @@ describe('get_email_thread — with message_id', () => {
     graphGetResponse = () => {
       callCount++;
       if (callCount === 1) {
-        // First call: fetch message to get conversationId
         return { conversationId: 'conv-resolved' };
       }
-      // Second call: fetch thread
       return {
         value: [
           { id: 'msg-1', subject: 'Original' },
@@ -364,7 +395,6 @@ describe('get_email_thread — with message_id', () => {
     assert.equal(structured.conversation_id, 'conv-resolved');
     assert.equal(structured.message_count, 2);
     assert.equal(graphGetCalls.length, 2);
-    // First call should be the message lookup
     assert.ok(graphGetCalls[0]!.endpoint.includes('/me/messages/msg-origin'));
   });
 
@@ -458,7 +488,6 @@ describe('get_file_content — metadata mode (default)', () => {
     assert.equal(structured.size_bytes, 100);
     assert.equal(structured.download_url, 'https://download.example.com/readme.txt?token=abc');
     assert.equal(structured.web_url, 'https://example.sharepoint.com/readme.txt');
-    // Should NOT have downloaded the file
     assert.equal(fetchCalls.length, 0, 'metadata mode should not download');
   });
 
@@ -703,7 +732,7 @@ describe('get_event — cache', () => {
     await callGetEvent({ event_id: 'evt-c1' });
 
     assert.equal(cacheSetCalls.length, 1);
-    assert.equal(cacheSetCalls[0]!.key, 'event:me:evt-c1');
+    assert.equal(cacheSetCalls[0]!.key, 'event:me:evt-c1:false');
     assert.equal(graphGetCalls.length, 1);
   });
 
@@ -718,6 +747,17 @@ describe('get_event — cache', () => {
 
     assert.equal(graphGetCalls.length, 0, 'should NOT call Graph API on cache hit');
     assert.equal(cacheSetCalls.length, 0);
+  });
+
+  it('uses distinct cache keys for minimal vs full event fetches', async () => {
+    graphGetResponse = { id: 'evt-c3', subject: 'Town Hall' };
+    await callGetEvent({ event_id: 'evt-c3' });
+    assert.equal(cacheSetCalls[0]!.key, 'event:me:evt-c3:false');
+
+    resetTracking();
+    graphGetResponse = { id: 'evt-c3', subject: 'Town Hall' };
+    await callGetEvent({ event_id: 'evt-c3', include_full: true });
+    assert.equal(cacheSetCalls[0]!.key, 'event:me:evt-c3:true');
   });
 });
 

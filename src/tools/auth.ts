@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import {
-  isLoggedIn,
   currentUser,
   login,
   logout,
@@ -9,17 +8,19 @@ import {
   startDeviceCodeLogin,
   deviceCodeLoginStatus,
 } from '../auth/index.js';
-import { ok } from '../utils/helpers.js';
-import type { ToolSpec, LoginMode } from '../utils/types.js';
+import { ok } from './results.js';
+import { requireLoggedIn } from './shared.js';
+import { defineTool } from './types.js';
+import type { LoginMode } from '../auth/types.js';
 
-export const authTools: ToolSpec[] = [
-  {
+export const authTools = [
+  defineTool({
     name: 'auth',
     description:
       'Authenticate with Microsoft Graph. Actions: login (interactive browser), login_device (device code for headless — returns code immediately, poll with status), logout, whoami, status (diagnostics + device code poll).',
     schema: z.object({ action: z.enum(['login', 'login_device', 'logout', 'whoami', 'status']) }).strict(),
     run: async (params) => {
-      const action = String(params.action);
+      const action = params.action;
 
       if (action === 'login') {
         const mode: LoginMode = 'interactive';
@@ -77,7 +78,7 @@ export const authTools: ToolSpec[] = [
       }
 
       // whoami
-      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
+      await requireLoggedIn();
       const user = await getGraph().api('/me').select('displayName,mail,userPrincipalName,id').get();
       return ok('User profile retrieved.', {
         id: user.id,
@@ -86,5 +87,5 @@ export const authTools: ToolSpec[] = [
         user_principal_name: user.userPrincipalName,
       });
     },
-  },
+  }),
 ];

@@ -16,7 +16,7 @@ const SUPPORTED_EXTENSIONS = new Set(['.pptx', '.docx', '.pdf', '.xlsx', '.odt',
 /** Max file size for parsing (50 MB). */
 const PARSE_MAX_BYTES = 50 * 1024 * 1024;
 
-export interface ParsedDocument {
+interface ParsedDocument {
   document_type: string;
   file_name: string;
   size_bytes: number;

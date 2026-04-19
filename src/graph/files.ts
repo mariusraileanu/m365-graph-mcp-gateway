@@ -1,16 +1,53 @@
 import { getGraph } from '../auth/index.js';
+import { downloadGraphContent } from './http.js';
+import type { GraphSearchHit, GraphSearchResponse } from './types.js';
 
-export function pickFile(item: Record<string, unknown>, includeFullPayload: boolean): Record<string, unknown> {
-  const parent = (item.parentReference || {}) as Record<string, unknown>;
+type GraphDriveItemFileFacet = {
+  mimeType?: string;
+};
+
+type GraphParentReference = {
+  driveId?: string;
+  path?: string;
+};
+
+export type GraphDriveItem = {
+  id?: string;
+  name?: string;
+  parentReference?: GraphParentReference;
+  lastModifiedDateTime?: string;
+  size?: number;
+  webUrl?: string;
+  '@microsoft.graph.downloadUrl'?: string;
+  file?: GraphDriveItemFileFacet;
+  createdBy?: { user?: { displayName?: string; id?: string } };
+  lastModifiedBy?: { user?: { displayName?: string; id?: string } };
+};
+
+export type DriveItemInfo = {
+  name: string;
+  size: number;
+  mimeType: string;
+  downloadUrl: string | null;
+  webUrl: string | null;
+};
+
+export function extractGraphSearchHits<TResource>(response: GraphSearchResponse<TResource>): Array<GraphSearchHit<TResource>> {
+  const values = Array.isArray(response.value) ? response.value : [];
+  return values[0]?.hitsContainers?.[0]?.hits ?? [];
+}
+
+export function pickFile(item: GraphDriveItem, includeFullPayload: boolean): Record<string, unknown> {
+  const parent = item.parentReference;
   const minimal = {
     id: item.id,
-    drive_id: parent.driveId,
+    drive_id: parent?.driveId,
     name: item.name,
-    path: parent.path,
+    path: parent?.path,
     modified_at: item.lastModifiedDateTime,
     size: item.size,
     web_url: item.webUrl,
-    download_url: (item['@microsoft.graph.downloadUrl'] as string) || null,
+    download_url: item['@microsoft.graph.downloadUrl'] ?? null,
   };
   if (!includeFullPayload) return minimal;
   return {
@@ -20,6 +57,28 @@ export function pickFile(item: Record<string, unknown>, includeFullPayload: bool
     modified_by: item.lastModifiedBy,
     parent_reference: item.parentReference,
   };
+}
+
+export async function getDriveItem(driveId: string, itemId: string): Promise<GraphDriveItem> {
+  return (await getGraph()
+    .api(`/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}`)
+    .get()) as GraphDriveItem;
+}
+
+export function getDriveItemInfo(item: GraphDriveItem): DriveItemInfo {
+  return {
+    name: item.name || 'unknown',
+    size: item.size ?? 0,
+    mimeType: item.file?.mimeType || 'application/octet-stream',
+    downloadUrl: item['@microsoft.graph.downloadUrl'] ?? null,
+    webUrl: item.webUrl ?? null,
+  };
+}
+
+export async function downloadDriveItemContent(driveId: string, itemId: string): Promise<Buffer> {
+  const endpoint = `https://graph.microsoft.com/v1.0/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/content`;
+  const { buffer } = await downloadGraphContent(endpoint, 'UPSTREAM_ERROR: file download failed');
+  return buffer;
 }
 
 export async function searchFiles(
@@ -42,16 +101,13 @@ export async function searchFiles(
       ],
     });
 
-  const values = Array.isArray((response as { value?: unknown[] }).value) ? (response as { value: unknown[] }).value : [];
-  const hits =
-    (values[0] as { hitsContainers?: Array<{ hits?: Array<{ resource?: Record<string, unknown>; summary?: string }> }> } | undefined)
-      ?.hitsContainers?.[0]?.hits || [];
+  const hits = extractGraphSearchHits(response as GraphSearchResponse<GraphDriveItem>);
 
   const q = query.toLowerCase();
   const mapped: Record<string, unknown>[] = [];
   for (const hit of hits) {
-    const resource = hit.resource || {};
-    const summary = String(hit.summary || '').trim();
+    const resource = hit.resource ?? ({} as GraphDriveItem);
+    const summary = (hit.summary || '').trim();
     const file = pickFile(resource, includeFullPayload);
 
     const name = String(file.name || '').toLowerCase();

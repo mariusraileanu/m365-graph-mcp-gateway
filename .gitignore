@@ -5,6 +5,7 @@
 
 # Build output
 dist/
+dist-test/
 
 # Runtime state (contains secrets/tokens/local history)
 data/**

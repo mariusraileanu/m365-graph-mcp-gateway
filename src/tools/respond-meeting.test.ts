@@ -98,6 +98,14 @@ mock.module('../graph/mail.js', {
     pickMail: (msg: Record<string, unknown>) => msg,
     buildMailAttachments: async () => ({ attachments: [], count: 0, totalBytes: 0 }),
     createReplyDraft: async () => ({ id: 'draft-1', source_message_id: 'msg-1', is_draft: true }),
+    prependHtmlToDraftBody: async (draftId: string, bodyHtml: string) => {
+      const current = graphGetHandler(`/me/messages/${encodeURIComponent(draftId)}`) as { body?: { content?: string } };
+      const existingBody = typeof current.body?.content === 'string' ? current.body.content : '';
+      graphPatchCalls.push({
+        endpoint: `/mock/messages/${encodeURIComponent(draftId)}`,
+        body: { body: { contentType: 'HTML', content: `${bodyHtml}<br><br>${existingBody}` } },
+      });
+    },
   },
 });
 

@@ -59,7 +59,6 @@ KV_SECRET_TENANT_ID="graph-mcp-tenant-id"
 KV_SECRET_ALLOW_DOMAINS="graph-mcp-allow-domains"
 KV_SECRET_ENCRYPTION_KEY="graph-mcp-encryption-key"
 KV_SECRET_USER_OID_SUFFIX="-entra-object-id"
-KV_SECRET_USER_OID_LEGACY_SUFFIX="-graph-mcp-object-id"
 USER_OID_SECRET=""
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -224,21 +223,10 @@ kv_secret_get() {
 ensure_user_object_id_secret() {
   local user="$1"
   local canonical_secret="${user}${KV_SECRET_USER_OID_SUFFIX}"
-  local legacy_secret="${user}${KV_SECRET_USER_OID_LEGACY_SUFFIX}"
 
   local canonical_value
   canonical_value="$(kv_secret_get "$canonical_secret")"
   if [ -n "$canonical_value" ]; then
-    USER_OID_SECRET="$canonical_secret"
-    return 0
-  fi
-
-  local legacy_value
-  legacy_value="$(kv_secret_get "$legacy_secret")"
-  if [ -n "$legacy_value" ]; then
-    log "Migrating identity secret '${legacy_secret}' -> '${canonical_secret}'"
-    az keyvault secret set --vault-name "$KV" --name "$canonical_secret" --value "$legacy_value" --output none
-    ok "Secret '${canonical_secret}' created from legacy value"
     USER_OID_SECRET="$canonical_secret"
     return 0
   fi

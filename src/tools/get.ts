@@ -1,8 +1,6 @@
 import { z } from 'zod';
-import { isLoggedIn, getGraph, getAccessToken } from '../auth/index.js';
+import { getGraph } from '../auth/index.js';
 import {
-  ok,
-  fail,
   includeFull,
   normalizeTop,
   compactText,
@@ -11,15 +9,18 @@ import {
   normalizeMailboxUser,
 } from '../utils/helpers.js';
 import { loadConfig } from '../config/index.js';
-import { graphCache } from '../utils/cache.js';
 import { pickMail } from '../graph/mail.js';
-import { pickEvent, resolveTimezone } from '../graph/calendar.js';
-import { pickFile } from '../graph/files.js';
+import { EVENT_FULL_SELECT, EVENT_MINIMAL_SELECT, pickEvent, resolveTimezone } from '../graph/calendar.js';
+import { downloadDriveItemContent, getDriveItem, getDriveItemInfo, pickFile } from '../graph/files.js';
 import { parseFile, isSupportedForParsing, supportedParseExtensions } from '../parsers/index.js';
-import type { ToolSpec } from '../utils/types.js';
-
-/** Cache TTL for Graph API read results (30 s). */
-const CACHE_TTL_MS = 30_000;
+import { ok, fail } from './results.js';
+import { requireLoggedIn, readThroughGraphCache, GRAPH_CACHE_TTL_MS } from './shared.js';
+import { defineTool } from './types.js';
+import type {
+  GraphCollectionResponse,
+  GraphEvent,
+  GraphMailMessage,
+} from '../graph/types.js';
 
 /** Max file size for in-memory buffering (10 MB). */
 const INLINE_MAX_BYTES = 10 * 1024 * 1024;
@@ -34,8 +35,12 @@ function isTextMime(mime: string): boolean {
   return TEXT_MIME_PREFIXES.some((p) => mime.startsWith(p));
 }
 
-export const getTools: ToolSpec[] = [
-  {
+type GraphConversationLookup = {
+  conversationId?: string;
+};
+
+export const getTools = [
+  defineTool({
     name: 'get_email',
     description:
       'Get a specific email by ID. Use after find to retrieve full details. ' +
@@ -44,21 +49,19 @@ export const getTools: ToolSpec[] = [
       .object({ message_id: z.string().min(1), include_full: z.boolean().optional(), mailbox_user: z.string().min(1).optional() })
       .strict(),
     run: async (params) => {
-      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
+      await requireLoggedIn();
       const mailboxUser = normalizeMailboxUser(params.mailbox_user);
       const cacheKey = `email:${mailboxUser || 'me'}:${params.message_id}`;
-      const cached = graphCache.get(cacheKey) as Record<string, unknown> | undefined;
-      const message =
-        cached ??
-        (await getGraph()
-          .api(graphMailboxPath(`/messages/${encodeURIComponent(String(params.message_id))}`, mailboxUser))
+      const message = await readThroughGraphCache<GraphMailMessage>(cacheKey, GRAPH_CACHE_TTL_MS, () =>
+        getGraph()
+          .api(graphMailboxPath(`/messages/${encodeURIComponent(params.message_id)}`, mailboxUser))
           .select('id,subject,from,toRecipients,ccRecipients,bodyPreview,isRead,receivedDateTime,conversationId,webLink,body')
-          .get());
-      if (!cached) graphCache.set(cacheKey, message as Record<string, unknown>, CACHE_TTL_MS);
-      return ok('Message retrieved.', pickMail(message as Record<string, unknown>, includeFull(params)));
+          .get(),
+      );
+      return ok('Message retrieved.', pickMail(message, includeFull(params)));
     },
-  },
-  {
+  }),
+  defineTool({
     name: 'get_event',
     description:
       'Get a specific calendar event by ID. Use after find to retrieve full details. ' +
@@ -67,22 +70,21 @@ export const getTools: ToolSpec[] = [
       .object({ event_id: z.string().min(1), include_full: z.boolean().optional(), mailbox_user: z.string().min(1).optional() })
       .strict(),
     run: async (params) => {
-      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
+      await requireLoggedIn();
       const mailboxUser = normalizeMailboxUser(params.mailbox_user);
-      const cacheKey = `event:${mailboxUser || 'me'}:${params.event_id}`;
-      const cached = graphCache.get(cacheKey) as Record<string, unknown> | undefined;
-      const event =
-        cached ??
-        (await getGraph()
-          .api(graphMailboxPath(`/events/${encodeURIComponent(String(params.event_id))}`, mailboxUser))
+      const includeFullPayload = includeFull(params);
+      const cacheKey = `event:${mailboxUser || 'me'}:${params.event_id}:${includeFullPayload}`;
+      const event = await readThroughGraphCache<GraphEvent>(cacheKey, GRAPH_CACHE_TTL_MS, () =>
+        getGraph()
+          .api(graphMailboxPath(`/events/${encodeURIComponent(params.event_id)}`, mailboxUser))
           .header('Prefer', `outlook.timezone="${resolveTimezone()}"`)
-          .select('id,subject,start,end,location,organizer,attendees,responseStatus,isOnlineMeeting,onlineMeeting,webLink,bodyPreview')
-          .get());
-      if (!cached) graphCache.set(cacheKey, event as Record<string, unknown>, CACHE_TTL_MS);
-      return ok('Event retrieved.', pickEvent(event as Record<string, unknown>, includeFull(params)));
+          .select(includeFullPayload ? EVENT_FULL_SELECT : EVENT_MINIMAL_SELECT)
+          .get(),
+      );
+      return ok('Event retrieved.', pickEvent(event, includeFullPayload));
     },
-  },
-  {
+  }),
+  defineTool({
     name: 'get_email_thread',
     description:
       'Fetch all messages in an email conversation thread. ' +
@@ -101,18 +103,18 @@ export const getTools: ToolSpec[] = [
         message: 'Either conversation_id or message_id is required',
       }),
     run: async (params) => {
-      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
+      await requireLoggedIn();
       const mailboxUser = normalizeMailboxUser(params.mailbox_user);
 
-      let conversationId = typeof params.conversation_id === 'string' ? params.conversation_id.trim() : '';
+      let conversationId = params.conversation_id?.trim() ?? '';
 
       // If no conversationId provided, fetch it from the message
       if (!conversationId) {
-        const msg = await getGraph()
-          .api(graphMailboxPath(`/messages/${encodeURIComponent(String(params.message_id))}`, mailboxUser))
+        const msg: GraphConversationLookup = await getGraph()
+          .api(graphMailboxPath(`/messages/${encodeURIComponent(params.message_id!)}`, mailboxUser))
           .select('conversationId')
           .get();
-        conversationId = String((msg as Record<string, unknown>).conversationId || '').trim();
+        conversationId = String(msg.conversationId || '').trim();
         if (!conversationId) throw new Error('NOT_FOUND: message has no conversationId');
       }
 
@@ -125,22 +127,21 @@ export const getTools: ToolSpec[] = [
 
       // Cache keyed on conversationId + include_full + top to avoid stale partial results
       const cacheKey = `thread:${mailboxUser || 'me'}:${conversationId}:${full}:${top}`;
-      const cachedResponse = graphCache.get(cacheKey) as { value?: Array<Record<string, unknown>> } | undefined;
-
-      const response =
-        cachedResponse ??
-        (await getGraph()
+      const response = await readThroughGraphCache<GraphCollectionResponse<GraphMailMessage>>(cacheKey, GRAPH_CACHE_TTL_MS, () =>
+        getGraph()
           .api(graphMailboxPath('/messages', mailboxUser))
           .filter(`conversationId eq '${escapeODataString(conversationId)}'`)
           .select(full ? fullFields : baseFields)
           .top(top)
-          .get());
-
-      if (!cachedResponse) graphCache.set(cacheKey, response as Record<string, unknown>, CACHE_TTL_MS);
+          .get(),
+      );
 
       // Sort client-side (oldest-first) — Exchange Online rejects $orderby combined with $filter on conversationId
-      const messages = ((response as { value?: Array<Record<string, unknown>> }).value ?? [])
-        .sort((a, b) => new Date(a.receivedDateTime as string).getTime() - new Date(b.receivedDateTime as string).getTime())
+      const messages = (response.value ?? [])
+        .sort(
+          (a, b) =>
+            new Date(String(a.receivedDateTime ?? '')).getTime() - new Date(String(b.receivedDateTime ?? '')).getTime(),
+        )
         .map((m) => pickMail(m, full));
 
       return ok(`Thread: ${messages.length} message(s).`, {
@@ -150,8 +151,8 @@ export const getTools: ToolSpec[] = [
         messages,
       });
     },
-  },
-  {
+  }),
+  defineTool({
     name: 'get_file_metadata',
     description:
       'Get metadata for a OneDrive/SharePoint file by drive_id and item_id (both returned by find). ' +
@@ -164,17 +165,13 @@ export const getTools: ToolSpec[] = [
       })
       .strict(),
     run: async (params) => {
-      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
-      const driveId = encodeURIComponent(String(params.drive_id));
-      const itemId = encodeURIComponent(String(params.item_id));
+      await requireLoggedIn();
       const cacheKey = `file:${params.drive_id}:${params.item_id}`;
-      const cached = graphCache.get(cacheKey) as Record<string, unknown> | undefined;
-      const item = cached ?? (await getGraph().api(`/drives/${driveId}/items/${itemId}`).get());
-      if (!cached) graphCache.set(cacheKey, item as Record<string, unknown>, CACHE_TTL_MS);
-      return ok('File metadata retrieved.', pickFile(item as Record<string, unknown>, includeFull(params)));
+      const item = await readThroughGraphCache(cacheKey, GRAPH_CACHE_TTL_MS, () => getDriveItem(params.drive_id, params.item_id));
+      return ok('File metadata retrieved.', pickFile(item, includeFull(params)));
     },
-  },
-  {
+  }),
+  defineTool({
     name: 'get_file_content',
     description:
       'Access file content from OneDrive/SharePoint. ' +
@@ -194,23 +191,15 @@ export const getTools: ToolSpec[] = [
       })
       .strict(),
     run: async (params) => {
-      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
+      await requireLoggedIn();
 
-      const driveId = encodeURIComponent(String(params.drive_id));
-      const itemId = encodeURIComponent(String(params.item_id));
+      const driveId = params.drive_id;
+      const itemId = params.item_id;
       const mode = params.mode ?? 'metadata';
 
-      // Step 1: Get metadata (includes @microsoft.graph.downloadUrl)
-      const meta = (await getGraph().api(`/drives/${driveId}/items/${itemId}`).get()) as Record<string, unknown>;
+      const meta = await readThroughGraphCache(`file:${params.drive_id}:${params.item_id}`, GRAPH_CACHE_TTL_MS, () => getDriveItem(driveId, itemId));
+      const { size: fileSize, name: fileName, mimeType, downloadUrl, webUrl } = getDriveItemInfo(meta);
 
-      const fileSize = Number(meta.size || 0);
-      const fileName = String(meta.name || 'unknown');
-      const fileMeta = meta.file as Record<string, unknown> | undefined;
-      const mimeType = String(fileMeta?.mimeType || 'application/octet-stream');
-      const downloadUrl = (meta['@microsoft.graph.downloadUrl'] as string) || null;
-      const webUrl = (meta.webUrl as string) || null;
-
-      // ── metadata mode: return file info + download URL, no download ──
       if (mode === 'metadata') {
         return ok(`File metadata: ${fileName}`, {
           name: fileName,
@@ -221,7 +210,6 @@ export const getTools: ToolSpec[] = [
         });
       }
 
-      // ── parsed mode: download and extract text from Office/PDF files ──
       if (mode === 'parsed') {
         if (!isSupportedForParsing(fileName)) {
           return fail('UNSUPPORTED_FILE_TYPE', `File '${fileName}' cannot be parsed. Supported: ${supportedParseExtensions().join(', ')}`, {
@@ -240,14 +228,7 @@ export const getTools: ToolSpec[] = [
           );
         }
 
-        const token = await getAccessToken();
-        const endpoint = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/content`;
-        const dlResp = await fetch(endpoint, { headers: { Authorization: `Bearer ${token}` }, keepalive: true });
-        if (!dlResp.ok) {
-          throw new Error(`UPSTREAM_ERROR: file download failed (${dlResp.status})`);
-        }
-
-        const buffer = Buffer.from(await dlResp.arrayBuffer());
+        const buffer = await downloadDriveItemContent(driveId, itemId);
         const maxChars = typeof params.max_chars === 'number' ? params.max_chars : 50_000;
         const parsed = await parseFile(buffer, fileName, maxChars);
 
@@ -263,9 +244,6 @@ export const getTools: ToolSpec[] = [
         });
       }
 
-      // ── inline / binary mode: download the file content ──
-
-      // Size guard: never buffer files >10 MB
       if (fileSize > INLINE_MAX_BYTES) {
         return fail(
           'FILE_TOO_LARGE',
@@ -280,7 +258,6 @@ export const getTools: ToolSpec[] = [
         );
       }
 
-      // For inline mode, reject non-text files
       if (mode === 'inline' && !isTextMime(mimeType)) {
         return fail('FILE_TOO_LARGE', `File '${fileName}' has non-text MIME type '${mimeType}'. Use binary mode or the download_url.`, {
           name: fileName,
@@ -291,18 +268,10 @@ export const getTools: ToolSpec[] = [
         });
       }
 
-      // Download the file content
-      const token = await getAccessToken();
-      const endpoint = `https://graph.microsoft.com/v1.0/drives/${driveId}/items/${itemId}/content`;
-      const response = await fetch(endpoint, { headers: { Authorization: `Bearer ${token}` }, keepalive: true });
-      if (!response.ok) {
-        throw new Error(`UPSTREAM_ERROR: file download failed (${response.status})`);
-      }
-
-      const buffer = Buffer.from(await response.arrayBuffer());
+      const buffer = await downloadDriveItemContent(driveId, itemId);
 
       if (mode === 'inline') {
-        const maxChars = Number.parseInt(String(params.max_chars || loadConfig().output.defaultMaxChars), 10);
+        const maxChars = params.max_chars ?? loadConfig().output.defaultMaxChars;
         const raw = buffer.toString('utf-8');
         const compact = compactText(raw, maxChars);
         return ok(`File content: ${fileName}`, {
@@ -315,7 +284,6 @@ export const getTools: ToolSpec[] = [
         });
       }
 
-      // binary mode
       return ok(`File content: ${fileName} (binary)`, {
         name: fileName,
         mime_type: mimeType,
@@ -325,5 +293,5 @@ export const getTools: ToolSpec[] = [
         truncated: false,
       });
     },
-  },
+  }),
 ];

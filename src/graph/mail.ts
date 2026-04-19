@@ -1,13 +1,51 @@
 import { loadConfig } from '../config/index.js';
-import { getGraph, getAccessToken } from '../auth/index.js';
+import { getGraph } from '../auth/index.js';
 import { compactText, stripHtml, graphMailboxPath } from '../utils/helpers.js';
-import type { GraphFileAttachment } from '../utils/types.js';
+import { downloadGraphContent } from './http.js';
+import type { GraphFileAttachment, GraphMailBody, GraphMailMessage } from './types.js';
 
-export function pickMail(message: Record<string, unknown>, includeFullPayload: boolean): Record<string, unknown> {
+type GraphDriveItemAttachmentSource = {
+  name?: string;
+  file?: {
+    mimeType?: string;
+  };
+};
+
+export type InlineAttachmentInput = {
+  name?: string;
+  content_base64?: string;
+  content_type?: string;
+};
+
+export type AttachmentRefInput = {
+  drive_id?: string;
+  item_id?: string;
+  name?: string;
+};
+
+export interface MailAttachmentParams {
+  attachments?: InlineAttachmentInput[];
+  attachment_refs?: AttachmentRefInput[];
+}
+
+export async function prependHtmlToDraftBody(draftId: string, bodyHtml: string, mailboxUser?: string): Promise<void> {
+  if (!bodyHtml.trim()) return;
+
+  const messagePath = graphMailboxPath(`/messages/${encodeURIComponent(draftId)}`, mailboxUser);
+  const current = (await getGraph().api(messagePath).select('body').get()) as { body?: GraphMailBody };
+  const existingBody = current.body?.content ?? '';
+  const merged = `${bodyHtml}<br><br>${existingBody}`;
+
+  await getGraph().api(messagePath).patch({
+    body: { contentType: 'HTML', content: merged },
+  });
+}
+
+export function pickMail(message: GraphMailMessage, includeFullPayload: boolean): Record<string, unknown> {
   const minimal = {
     id: message.id,
     subject: message.subject,
-    from: (message.from as { emailAddress?: { address?: string; name?: string } } | undefined)?.emailAddress,
+    from: message.from?.emailAddress,
     sent_at: message.sentDateTime,
     received_at: message.receivedDateTime,
     is_read: message.isRead,
@@ -15,8 +53,8 @@ export function pickMail(message: Record<string, unknown>, includeFullPayload: b
   };
   if (!includeFullPayload) return minimal;
 
-  const bodyRaw = (message.body as { content?: string } | undefined)?.content || '';
-  const compact = compactText(stripHtml(String(bodyRaw)), loadConfig().output.defaultMaxChars);
+  const bodyRaw = message.body?.content ?? '';
+  const compact = compactText(stripHtml(bodyRaw), loadConfig().output.defaultMaxChars);
   return {
     ...minimal,
     to: message.toRecipients,
@@ -37,21 +75,15 @@ async function fetchDriveItemAttachment(
   itemId: string,
   preferredName?: string,
 ): Promise<{ attachment: GraphFileAttachment; bytes: number }> {
-  const item = await getGraph()
+  const item = (await getGraph()
     .api(`/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}`)
     .select('id,name,size,file')
-    .get();
-  const fileName = String(preferredName || item?.name || `file-${itemId}`);
-  const mimeType = String(item?.file?.mimeType || 'application/octet-stream');
+    .get()) as GraphDriveItemAttachmentSource;
+  const fileName = preferredName || item.name || `file-${itemId}`;
+  const mimeType = item.file?.mimeType || 'application/octet-stream';
 
-  const token = await getAccessToken();
   const endpoint = `https://graph.microsoft.com/v1.0/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/content`;
-  const response = await fetch(endpoint, { headers: { Authorization: `Bearer ${token}` }, keepalive: true });
-  if (!response.ok) {
-    throw new Error(`UPSTREAM_ERROR: attachment fetch failed (${response.status})`);
-  }
-
-  const bytes = Buffer.from(await response.arrayBuffer());
+  const { buffer: bytes, contentType } = await downloadGraphContent(endpoint, 'UPSTREAM_ERROR: attachment fetch failed');
   if (bytes.length > MAX_ATTACHMENT_BYTES_SINGLE) {
     throw new Error(`VALIDATION_ERROR: attachment '${fileName}' exceeds ${MAX_ATTACHMENT_BYTES_SINGLE} bytes`);
   }
@@ -61,17 +93,17 @@ async function fetchDriveItemAttachment(
     attachment: {
       '@odata.type': '#microsoft.graph.fileAttachment',
       name: fileName,
-      contentType: response.headers.get('content-type') || mimeType,
+      contentType: contentType || mimeType,
       contentBytes: bytes.toString('base64'),
     },
   };
 }
 
 export async function buildMailAttachments(
-  params: Record<string, unknown>,
+  params: MailAttachmentParams,
 ): Promise<{ attachments: GraphFileAttachment[]; count: number; totalBytes: number }> {
-  const inlineRaw = Array.isArray(params.attachments) ? (params.attachments as Array<Record<string, unknown>>) : [];
-  const refsRaw = Array.isArray(params.attachment_refs) ? (params.attachment_refs as Array<Record<string, unknown>>) : [];
+  const inlineRaw = params.attachments ?? [];
+  const refsRaw = params.attachment_refs ?? [];
 
   const totalCount = inlineRaw.length + refsRaw.length;
   if (totalCount > MAX_ATTACHMENT_COUNT) {
@@ -82,8 +114,8 @@ export async function buildMailAttachments(
   let totalBytes = 0;
 
   for (const inline of inlineRaw) {
-    const name = String(inline.name || '').trim();
-    const contentBase64Raw = String(inline.content_base64 || '').trim();
+    const name = (inline.name || '').trim();
+    const contentBase64Raw = (inline.content_base64 || '').trim();
     if (!name || !contentBase64Raw) {
       throw new Error('VALIDATION_ERROR: inline attachment requires name and content_base64');
     }
@@ -99,18 +131,18 @@ export async function buildMailAttachments(
     attachments.push({
       '@odata.type': '#microsoft.graph.fileAttachment',
       name,
-      contentType: String(inline.content_type || 'application/octet-stream'),
+      contentType: inline.content_type || 'application/octet-stream',
       contentBytes: bytes.toString('base64'),
     });
   }
 
   for (const ref of refsRaw) {
-    const driveId = String(ref.drive_id || '').trim();
-    const itemId = String(ref.item_id || '').trim();
+    const driveId = (ref.drive_id || '').trim();
+    const itemId = (ref.item_id || '').trim();
     if (!driveId || !itemId) {
       throw new Error('VALIDATION_ERROR: attachment_refs entries require drive_id and item_id');
     }
-    const resolved = await fetchDriveItemAttachment(driveId, itemId, typeof ref.name === 'string' ? ref.name : undefined);
+    const resolved = await fetchDriveItemAttachment(driveId, itemId, ref.name || undefined);
     totalBytes += resolved.bytes;
     attachments.push(resolved.attachment);
   }
@@ -132,22 +164,11 @@ export async function createReplyDraft(
     replyAll ? `/messages/${encodeURIComponent(messageId)}/createReplyAll` : `/messages/${encodeURIComponent(messageId)}/createReply`,
     mailboxUser,
   );
-  const created = await getGraph().api(endpoint).post({});
-  const draftId = String(created?.id || '').trim();
+  const created = (await getGraph().api(endpoint).post({})) as { id?: string };
+  const draftId = (created.id || '').trim();
   if (!draftId) throw new Error('UPSTREAM_ERROR: failed to create reply draft');
 
-  if (bodyHtml.trim()) {
-    const current = await getGraph()
-      .api(graphMailboxPath(`/messages/${encodeURIComponent(draftId)}`, mailboxUser))
-      .select('body')
-      .get();
-    const merged = `${bodyHtml}<br><br>${String(current?.body?.content || '')}`;
-    await getGraph()
-      .api(graphMailboxPath(`/messages/${encodeURIComponent(draftId)}`, mailboxUser))
-      .patch({
-        body: { contentType: 'HTML', content: merged },
-      });
-  }
+  await prependHtmlToDraftBody(draftId, bodyHtml, mailboxUser);
 
   return { id: draftId, source_message_id: messageId, is_draft: true };
 }

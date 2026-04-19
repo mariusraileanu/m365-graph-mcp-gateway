@@ -1,8 +1,6 @@
 import { z } from 'zod';
-import { isLoggedIn, currentUser, getGraph } from '../auth/index.js';
+import { currentUser, getGraph } from '../auth/index.js';
 import {
-  ok,
-  requireConfirm,
   sanitizeForLogs,
   escapeHtml,
   sanitizeEmailHtml,
@@ -10,12 +8,15 @@ import {
   graphMailboxPath,
   normalizeMailboxUser,
 } from '../utils/helpers.js';
-import { auditLogger } from '../utils/audit.js';
 import { pickEvent, resolveTimezone } from '../graph/calendar.js';
-import type { ToolSpec } from '../utils/types.js';
+import { ok, requireConfirm } from './results.js';
+import { requireLoggedIn } from './shared.js';
+import { writeAuditLog } from './write-audit.js';
+import { defineTool } from './types.js';
+import type { GraphEvent } from '../graph/types.js';
 
-export const scheduleMeetingTools: ToolSpec[] = [
-  {
+export const scheduleMeetingTools = [
+  defineTool({
     name: 'schedule_meeting',
     description:
       'Schedule a meeting. Provide explicit start/end, or provide preferred_start/preferred_end + duration_minutes to auto-find a free slot. ' +
@@ -38,41 +39,43 @@ export const scheduleMeetingTools: ToolSpec[] = [
       })
       .strict(),
     run: async (params) => {
-      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
+      await requireLoggedIn();
       const mailboxUser = normalizeMailboxUser(params.mailbox_user);
 
-      const attendees = Array.isArray(params.attendees) ? params.attendees.map((x) => String(x)) : [];
+      const attendees = params.attendees ?? [];
       for (const attendee of attendees) {
         const check = checkEmailAllowed(attendee);
         if (!check.allowed) throw new Error(`FORBIDDEN: ${check.reason}`);
       }
       const teamsMeeting = params.teams_meeting === true;
-      const agenda = typeof params.agenda === 'string' ? params.agenda.trim() : '';
-      const durationMinutes = Number.parseInt(String(params.duration_minutes ?? 60), 10);
-      const tz = resolveTimezone(typeof params.timezone === 'string' && params.timezone.trim() ? params.timezone.trim() : undefined);
+      const agenda = params.agenda?.trim() ?? '';
+      const durationMinutes = params.duration_minutes ?? 60;
+      const tz = resolveTimezone(params.timezone?.trim() ? params.timezone.trim() : undefined);
 
       let meetingStart: string;
       let meetingEnd: string;
 
       if (params.start && params.end) {
-        meetingStart = String(params.start);
-        meetingEnd = String(params.end);
+        meetingStart = params.start;
+        meetingEnd = params.end;
       } else if (params.preferred_start && params.preferred_end) {
         // Auto-find a free slot
         const schedule = await getGraph()
           .api(graphMailboxPath('/calendar/getSchedule', mailboxUser))
           .post({
             schedules: [mailboxUser || (await currentUser()) || ''],
-            startTime: { dateTime: String(params.preferred_start), timeZone: tz },
-            endTime: { dateTime: String(params.preferred_end), timeZone: tz },
+            startTime: { dateTime: params.preferred_start, timeZone: tz },
+            endTime: { dateTime: params.preferred_end, timeZone: tz },
             availabilityViewInterval: 30,
           });
 
-        const busySlots =
-          (schedule?.value?.[0] as { scheduleItems?: Array<{ start: { dateTime: string }; end: { dateTime: string } }> } | undefined)
-            ?.scheduleItems || [];
-        const windowStart = new Date(String(params.preferred_start));
-        const windowEnd = new Date(String(params.preferred_end));
+        const scheduleRoot = schedule as { value?: Array<{ scheduleItems?: Array<{ start: { dateTime: string }; end: { dateTime: string } }> }> };
+        const busySlots = scheduleRoot.value?.[0]?.scheduleItems;
+        if (!Array.isArray(busySlots)) {
+          throw new Error('UPSTREAM_ERROR: getSchedule response missing scheduleItems');
+        }
+        const windowStart = new Date(params.preferred_start);
+        const windowEnd = new Date(params.preferred_end);
         let foundSlot: { start: string; end: string } | null = null;
 
         for (let cursor = new Date(windowStart); cursor < windowEnd; cursor = new Date(cursor.getTime() + 30 * 60_000)) {
@@ -116,17 +119,13 @@ export const scheduleMeetingTools: ToolSpec[] = [
       });
       if (gate) return gate;
 
-      const bodyHtml =
-        typeof params.body_html === 'string' && params.body_html.trim()
-          ? sanitizeEmailHtml(String(params.body_html))
-          : agenda
-            ? `<p>${escapeHtml(agenda).replace(/\n/g, '<br/>')}</p>`
-            : undefined;
+      const subject = params.subject;
+      const bodyHtml = params.body_html?.trim() ? sanitizeEmailHtml(params.body_html) : agenda ? `<p>${escapeHtml(agenda).replace(/\n/g, '<br/>')}</p>` : undefined;
 
-      const event = await getGraph()
+      const event: GraphEvent = await getGraph()
         .api(graphMailboxPath('/events', mailboxUser))
         .post({
-          subject: String(params.subject),
+          subject,
           start: { dateTime: meetingStart, timeZone: tz },
           end: { dateTime: meetingEnd, timeZone: tz },
           body: bodyHtml ? { contentType: 'HTML', content: bodyHtml } : undefined,
@@ -135,23 +134,18 @@ export const scheduleMeetingTools: ToolSpec[] = [
           onlineMeetingProvider: teamsMeeting ? 'teamsForBusiness' : undefined,
         });
 
-      await auditLogger.log({
-        action: 'schedule_meeting',
-        user: (await currentUser()) || 'unknown',
-        details: {
-          subject: sanitizeForLogs(String(params.subject)),
-          attendeeCount: attendees.length,
-          start: meetingStart,
-          teams_meeting: teamsMeeting,
-          has_agenda: Boolean(agenda || bodyHtml),
-          ...(mailboxUser ? { mailbox_user: mailboxUser } : {}),
-        },
-        status: 'success',
+      await writeAuditLog('schedule_meeting', {
+        subject: sanitizeForLogs(subject),
+        attendeeCount: attendees.length,
+        start: meetingStart,
+        teams_meeting: teamsMeeting,
+        has_agenda: Boolean(agenda || bodyHtml),
+        ...(mailboxUser ? { mailbox_user: mailboxUser } : {}),
       });
       return ok('Meeting scheduled.', {
         ...(mailboxUser ? { mailbox_user: mailboxUser } : {}),
-        ...pickEvent(event as Record<string, unknown>, false),
+        ...pickEvent(event, false),
       });
     },
-  },
+  }),
 ];

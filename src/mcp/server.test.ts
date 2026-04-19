@@ -34,6 +34,7 @@ mock.module('../auth/index.js', {
   namedExports: {
     isLoggedIn: async () => true,
     currentUser: async () => 'test@example.com',
+    setAuthNotifier: () => {},
     getAccessToken: async () => 'mock-token',
     getGraph: () => ({}),
   },

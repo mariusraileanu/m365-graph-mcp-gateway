@@ -1,16 +1,29 @@
 import { z } from 'zod';
 import { loadConfig } from '../config/index.js';
-import { ok, compactText, normalizeTop, graphMailboxPath, normalizeMailboxUser } from '../utils/helpers.js';
+import { compactText, normalizeTop, graphMailboxPath, normalizeMailboxUser } from '../utils/helpers.js';
 import { getGraph } from '../auth/index.js';
-import { searchFiles } from '../graph/files.js';
+import { extractGraphSearchHits, searchFiles } from '../graph/files.js';
 import { calendarView } from '../graph/calendar.js';
 import { log } from '../utils/log.js';
-import type { ToolSpec } from '../utils/types.js';
+import { ok } from './results.js';
+import { defineTool } from './types.js';
+import type { GraphCollectionResponse, GraphMailMessage, GraphSearchResponse } from '../graph/types.js';
 
 type EntityType = 'mail' | 'files' | 'events';
 
+type GraphEventSearchResource = {
+  id?: string;
+  subject?: string;
+  start?: { dateTime?: string; timeZone?: string };
+  end?: { dateTime?: string; timeZone?: string };
+  organizer?: { emailAddress?: { name?: string; address?: string } };
+};
+
+type FindResultItem = Record<string, unknown>;
+type SearchExecution = { type: EntityType; provider: string; results: FindResultItem[] };
+
 /** Search mail via Graph /me/messages or /users/{mailbox_user}/messages */
-async function searchMail(query: string, top: number, mailboxUser?: string | null): Promise<Record<string, unknown>[]> {
+async function searchMail(query: string, top: number, mailboxUser?: string | null): Promise<FindResultItem[]> {
   const messages = await getGraph()
     .api(graphMailboxPath('/messages', mailboxUser))
     .header('ConsistencyLevel', 'eventual')
@@ -18,30 +31,24 @@ async function searchMail(query: string, top: number, mailboxUser?: string | nul
     .select('id,subject,from,receivedDateTime,bodyPreview')
     .top(top)
     .get();
-  return ((messages as { value?: Array<Record<string, unknown>> }).value ?? []).map((m) => ({
+  return ((messages as GraphCollectionResponse<GraphMailMessage>).value ?? []).map((message) => ({
     type: 'mail',
-    id: m.id,
-    subject: m.subject,
-    from: m.from,
-    received_at: m.receivedDateTime,
-    snippet: typeof m.bodyPreview === 'string' ? m.bodyPreview.slice(0, 200) : undefined,
+    id: message.id,
+    subject: message.subject,
+    from: message.from,
+    received_at: message.receivedDateTime,
+    snippet: typeof message.bodyPreview === 'string' ? message.bodyPreview.slice(0, 200) : undefined,
   }));
 }
 
 /** Search events via Graph /search/query (text-based, no date filtering) */
-async function searchEvents(query: string, top: number): Promise<Record<string, unknown>[]> {
+async function searchEvents(query: string, top: number): Promise<FindResultItem[]> {
   const response = await getGraph()
     .api('/search/query')
     .post({
       requests: [{ entityTypes: ['event'], query: { queryString: query }, from: 0, size: top }],
     });
-  const values = (response as { value?: unknown[] }).value ?? [];
-  const hits =
-    (
-      values[0] as
-        | { hitsContainers?: Array<{ hits?: Array<{ hitId?: string; resource?: Record<string, unknown>; summary?: string }> }> }
-        | undefined
-    )?.hitsContainers?.[0]?.hits ?? [];
+  const hits = extractGraphSearchHits(response as GraphSearchResponse<GraphEventSearchResource>);
   return hits.map((h) => {
     const r = h.resource ?? {};
     return {
@@ -56,25 +63,25 @@ async function searchEvents(query: string, top: number): Promise<Record<string, 
   });
 }
 
-/** Fetch events in a date range via CalendarView API (expands recurring events, includes attendees). */
+/** Fetch events in a date range via CalendarView API with a compact summary-first shape. */
 async function listEvents(
   startDate: string,
   endDate: string,
   top: number,
   timezone?: string,
   mailboxUser?: string | null,
-): Promise<Record<string, unknown>[]> {
-  const events = await calendarView(startDate, endDate, top, timezone, mailboxUser || undefined);
+): Promise<FindResultItem[]> {
+  const events = await calendarView(startDate, endDate, top, timezone, mailboxUser || undefined, 'minimal');
   return events.map((e) => ({ type: 'event', ...e }));
 }
 
-export const findTools: ToolSpec[] = [
-  {
+export const findTools = [
+  defineTool({
     name: 'find',
     description:
       'Search across Microsoft 365 — mail, files, and calendar events. ' +
       'For calendar events: provide start_date and end_date (ISO 8601) to list all events in a date range ' +
-      '(includes organizer, attendees, location). Resolve relative dates like "Monday" or "next week" to concrete ISO dates before calling. ' +
+      '(includes organizer, location, and meeting links in a compact shape). Resolve relative dates like "Monday" or "next week" to concrete ISO dates before calling. ' +
       'Optional mailbox_user targets a shared mailbox/calendar (UPN/email/object-id) via /users/{mailbox_user}. ' +
       'When mailbox_user is set for events, start_date and end_date are required. ' +
       'Without date params, falls back to text-based search. ' +
@@ -92,25 +99,23 @@ export const findTools: ToolSpec[] = [
       })
       .strict(),
     run: async (params) => {
-      const query = String(params.query).trim();
-      const kql = typeof params.kql === 'string' ? params.kql.trim() : '';
+      const query = params.query.trim();
+      const kql = params.kql?.trim() ?? '';
       const queryString = kql || query;
 
       log.debug('find', { query, kql: kql || undefined, effectiveQuery: queryString });
 
-      const entityTypes: EntityType[] = Array.isArray(params.entity_types)
-        ? (params.entity_types.map(String) as EntityType[])
-        : ['mail', 'files', 'events'];
-      const startDate = typeof params.start_date === 'string' ? params.start_date.trim() : '';
-      const endDate = typeof params.end_date === 'string' ? params.end_date.trim() : '';
+      const entityTypes: EntityType[] = params.entity_types ?? ['mail', 'files', 'events'];
+      const startDate = params.start_date?.trim() ?? '';
+      const endDate = params.end_date?.trim() ?? '';
       const mailboxUser = normalizeMailboxUser(params.mailbox_user);
       const top = normalizeTop(params.top);
-      const maxChars = Number.parseInt(String(params.max_chars || loadConfig().output.defaultMaxChars), 10);
+      const maxChars = params.max_chars ?? loadConfig().output.defaultMaxChars;
 
       const t0 = Date.now();
 
       // Run searches in parallel for requested entity types
-      const searches: Promise<{ type: string; provider: string; results: Record<string, unknown>[] }>[] = [];
+      const searches: Promise<SearchExecution>[] = [];
       const preValidationErrors: string[] = [];
 
       if (entityTypes.includes('files')) {
@@ -127,7 +132,7 @@ export const findTools: ToolSpec[] = [
       }
       if (entityTypes.includes('events')) {
         if (startDate && endDate) {
-          // Date range provided: use CalendarView API for precise results with full attendee data
+          // Date range provided: use CalendarView API for precise summary-first event results
           searches.push(
             listEvents(startDate, endDate, top, undefined, mailboxUser).then((results) => ({
               type: 'events',
@@ -147,18 +152,28 @@ export const findTools: ToolSpec[] = [
         }
       }
 
+      if (searches.length === 0) {
+        throw new Error(preValidationErrors[0] || 'VALIDATION_ERROR: no search providers selected');
+      }
+
       const searchResults = await Promise.allSettled(searches);
-      const allResults: Record<string, unknown>[] = [];
+      const allResults: FindResultItem[] = [];
       const providers: string[] = [];
       const errors: string[] = [...preValidationErrors];
+      let fulfilledSearches = 0;
 
       for (const result of searchResults) {
         if (result.status === 'fulfilled') {
+          fulfilledSearches += 1;
           allResults.push(...result.value.results);
           if (!providers.includes(result.value.provider)) providers.push(result.value.provider);
         } else {
           errors.push(result.reason?.message || String(result.reason));
         }
+      }
+
+      if (fulfilledSearches === 0) {
+        throw new Error(errors[0] || 'UPSTREAM_ERROR: all search providers failed');
       }
 
       const summaryText =
@@ -197,5 +212,5 @@ export const findTools: ToolSpec[] = [
         ...(errors.length > 0 ? { errors } : {}),
       });
     },
-  },
+  }),
 ];

@@ -1,5 +1,6 @@
 import { describe, it, mock, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { createAuditLoggerMock, createSilentLogMock, createTestConfig } from '../test-support/tool-test-helpers.js';
 
 // ── Module-level mocks ──────────────────────────────────────────────────────
 
@@ -33,19 +34,7 @@ function createChainableClient() {
 
 mock.module('../config/index.js', {
   namedExports: {
-    loadConfig: () => ({
-      azure: { clientId: 'test', tenantId: 'test' },
-      scopes: ['Chat.Read', 'ChatMessage.Send'],
-      guardrails: {
-        email: { allowDomains: ['example.com'], requireDraftApproval: true, stripSensitiveFromLogs: false },
-        audit: { enabled: false, logPath: '/tmp/audit.jsonl', retentionDays: 90 },
-      },
-      safety: { requireConfirmForWrites: true },
-      output: { defaultIncludeFull: false, defaultMaxChars: 4000, hardMaxChars: 20000 },
-      search: { defaultTop: 10, maxTop: 50 },
-      calendar: { defaultTimezone: 'UTC' },
-      storage: { tokenPath: 'graph-mcp/tokens' },
-    }),
+    loadConfig: () => createTestConfig({ scopes: ['Chat.Read', 'ChatMessage.Send'] }),
   },
 });
 
@@ -61,19 +50,13 @@ mock.module('../auth/index.js', {
 const auditLogCalls: Array<Record<string, unknown>> = [];
 mock.module('../utils/audit.js', {
   namedExports: {
-    auditLogger: {
-      log: async (entry: Record<string, unknown>) => {
-        auditLogCalls.push(entry);
-      },
-      list: async () => [],
-      init: async () => {},
-    },
+    auditLogger: createAuditLoggerMock(auditLogCalls),
   },
 });
 
 mock.module('../utils/log.js', {
   namedExports: {
-    log: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+    log: createSilentLogMock(),
   },
 });
 

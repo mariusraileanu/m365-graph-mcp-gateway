@@ -1,11 +1,14 @@
 import { z } from 'zod';
-import { isLoggedIn, currentUser, getGraph } from '../auth/index.js';
-import { ok, requireConfirm, sanitizeEmailHtml, graphMailboxPath, normalizeMailboxUser } from '../utils/helpers.js';
-import { auditLogger } from '../utils/audit.js';
-import type { ToolSpec } from '../utils/types.js';
+import { getGraph } from '../auth/index.js';
+import { sanitizeEmailHtml, graphMailboxPath, normalizeMailboxUser } from '../utils/helpers.js';
+import { prependHtmlToDraftBody } from '../graph/mail.js';
+import { ok, requireConfirm } from './results.js';
+import { requireLoggedIn } from './shared.js';
+import { writeAuditLog } from './write-audit.js';
+import { defineTool } from './types.js';
 
-export const respondMeetingTools: ToolSpec[] = [
-  {
+export const respondMeetingTools = [
+  defineTool({
     name: 'respond_to_meeting',
     description:
       'Respond to a meeting invitation (accept/decline/tentative), cancel a meeting you organized, or create a reply-all draft to meeting attendees. ' +
@@ -21,9 +24,9 @@ export const respondMeetingTools: ToolSpec[] = [
       })
       .strict(),
     run: async (params) => {
-      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
-      const eventId = String(params.event_id).trim();
-      const action = String(params.action) as 'accept' | 'decline' | 'tentativelyAccept' | 'cancel' | 'reply_all_draft';
+      await requireLoggedIn();
+      const eventId = params.event_id.trim();
+      const action = params.action;
       const mailboxUser = normalizeMailboxUser(params.mailbox_user);
 
       if (action === 'reply_all_draft') {
@@ -52,27 +55,13 @@ export const respondMeetingTools: ToolSpec[] = [
         const draftId = String(created?.id || '').trim();
         if (!draftId) throw new Error('UPSTREAM_ERROR: failed to create reply-all draft');
 
-        if (String(params.body_html || '').trim()) {
-          const current = await getGraph()
-            .api(graphMailboxPath(`/messages/${encodeURIComponent(draftId)}`, mailboxUser))
-            .select('body')
-            .get();
-          const merged = `${sanitizeEmailHtml(String(params.body_html))}<br><br>${String(current?.body?.content || '')}`;
-          await getGraph()
-            .api(graphMailboxPath(`/messages/${encodeURIComponent(draftId)}`, mailboxUser))
-            .patch({ body: { contentType: 'HTML', content: merged } });
-        }
+        await prependHtmlToDraftBody(draftId, sanitizeEmailHtml(params.body_html ?? ''), mailboxUser || undefined);
 
-        await auditLogger.log({
-          action: 'respond_to_meeting_reply_all_draft',
-          user: (await currentUser()) || 'unknown',
-          details: {
-            event_id: eventId,
-            draft_id: draftId,
-            source_message_id: invite.id,
-            ...(mailboxUser ? { mailbox_user: mailboxUser } : {}),
-          },
-          status: 'success',
+        await writeAuditLog('respond_to_meeting_reply_all_draft', {
+          event_id: eventId,
+          draft_id: draftId,
+          source_message_id: invite.id,
+          ...(mailboxUser ? { mailbox_user: mailboxUser } : {}),
         });
         return ok('Reply-all draft created for meeting attendees.', {
           id: draftId,
@@ -89,16 +78,14 @@ export const respondMeetingTools: ToolSpec[] = [
         await getGraph()
           .api(graphMailboxPath(`/events/${encodeURIComponent(eventId)}/cancel`, mailboxUser))
           .post(comment ? { comment } : {});
-        await auditLogger.log({
-          action: 'respond_to_meeting_cancel',
-          user: (await currentUser()) || 'unknown',
-          details: { event_id: eventId, has_comment: Boolean(comment), ...(mailboxUser ? { mailbox_user: mailboxUser } : {}) },
-          status: 'success',
+        await writeAuditLog('respond_to_meeting_cancel', {
+          event_id: eventId,
+          has_comment: Boolean(comment),
+          ...(mailboxUser ? { mailbox_user: mailboxUser } : {}),
         });
         return ok('Meeting cancelled.', { success: true, event_id: eventId, ...(mailboxUser ? { mailbox_user: mailboxUser } : {}) });
       }
 
-      // RSVP: accept, decline, tentativelyAccept
       const gate = requireConfirm('respond_to_meeting', params, { event_id: eventId, action, comment: params.comment });
       if (gate) return gate;
 
@@ -106,12 +93,7 @@ export const respondMeetingTools: ToolSpec[] = [
       await getGraph()
         .api(graphMailboxPath(`/events/${encodeURIComponent(eventId)}/${action}`, mailboxUser))
         .post(payload);
-      await auditLogger.log({
-        action: 'respond_to_meeting',
-        user: (await currentUser()) || 'unknown',
-        details: { event_id: eventId, action, ...(mailboxUser ? { mailbox_user: mailboxUser } : {}) },
-        status: 'success',
-      });
+      await writeAuditLog('respond_to_meeting', { event_id: eventId, action, ...(mailboxUser ? { mailbox_user: mailboxUser } : {}) });
       return ok(`Meeting response sent: ${action}.`, {
         success: true,
         event_id: eventId,
@@ -119,5 +101,5 @@ export const respondMeetingTools: ToolSpec[] = [
         ...(mailboxUser ? { mailbox_user: mailboxUser } : {}),
       });
     },
-  },
+  }),
 ];

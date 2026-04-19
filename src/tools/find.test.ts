@@ -18,18 +18,29 @@ const searchFilesImpl = mock.fn(async (query: string, top: number, mode: string,
 });
 
 /** Tracks calls to calendarView for assertion. */
-const calendarViewCalls: Array<{ startDate: string; endDate: string; top: number; timezone?: string; mailboxUser?: string }> = [];
-const calendarViewImpl = mock.fn(async (startDate: string, endDate: string, top: number, timezone?: string, mailboxUser?: string) => {
-  calendarViewCalls.push({ startDate, endDate, top, timezone, mailboxUser });
-  return [
-    {
-      id: 'event-cv-1',
-      subject: 'CalendarView Event',
-      start: '2026-03-23T09:00:00',
-      end: '2026-03-23T10:00:00',
-    },
-  ];
-});
+const calendarViewCalls: Array<{
+  startDate: string;
+  endDate: string;
+  top: number;
+  timezone?: string;
+  mailboxUser?: string;
+  detailLevel?: string;
+}> = [];
+const calendarViewImpl = mock.fn(
+  async (startDate: string, endDate: string, top: number, timezone?: string, mailboxUser?: string, detailLevel?: string) => {
+    calendarViewCalls.push({ startDate, endDate, top, timezone, mailboxUser, detailLevel });
+    return [
+      {
+        id: 'event-cv-1',
+        subject: 'CalendarView Event',
+        start: '2026-03-23T09:00:00',
+        end: '2026-03-23T10:00:00',
+        organizer: { name: 'Org', address: 'org@example.com' },
+        web_link: 'https://outlook.office365.com/owa/?itemid=event-cv-1',
+      },
+    ];
+  },
+);
 
 /** Chainable Graph client mock for searchMail and searchEvents. */
 const graphSearchCalls: Array<{ endpoint: string; body?: unknown }> = [];
@@ -92,7 +103,13 @@ function createChainableClient() {
 }
 
 mock.module('../graph/files.js', {
-  namedExports: { searchFiles: searchFilesImpl },
+  namedExports: {
+    searchFiles: searchFilesImpl,
+    extractGraphSearchHits: (response: { value?: Array<{ hitsContainers?: Array<{ hits?: unknown[] }> }> }) => {
+      const values = Array.isArray(response.value) ? response.value : [];
+      return values[0]?.hitsContainers?.[0]?.hits ?? [];
+    },
+  },
 });
 
 mock.module('../graph/calendar.js', {
@@ -247,6 +264,11 @@ describe('find tool — event search routing', () => {
     assert.equal(calendarViewCalls.length, 1, 'calendarView should be called');
     assert.equal(graphSearchCalls.length, 0, 'no /search/query call');
     assert.ok((sc.providers as string[]).includes('calendar-view'), 'provider should be calendar-view');
+    assert.equal(calendarViewCalls[0]!.detailLevel, 'minimal');
+    const event = (sc.results as Array<Record<string, unknown>>)[0]!;
+    assert.ok(!('attendee_count' in event), 'find should not return attendee counts in minimal event results');
+    assert.ok(!('attendees' in event), 'find should not return attendee lists');
+    assert.ok(!('body_preview' in event), 'find should not return body preview');
   });
 
   it('date-range with mailbox_user passes mailbox to calendarView', async () => {

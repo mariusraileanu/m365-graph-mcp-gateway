@@ -1,33 +1,7 @@
 /**
- * Authentication module — per-user isolated delegated Graph bridge.
- *
- * Architecture notes (read before modifying):
- *
- *   This gateway is NOT a shared multi-user backend. Each deployment is a
- *   dedicated container serving exactly one Microsoft identity. Therefore:
- *
- *   - PublicClientApplication is intentional (delegated user auth, not
- *     confidential app auth or OBO). This aligns with Microsoft identity
- *     platform guidance for user-owned helper services.
- *
- *   - Module-level singletons (msal, graph, lastKnownAccount) are acceptable
- *     because there is never more than one concurrent user identity.
- *
- *   - File-based token cache persistence is intentional. The cache lives on
- *     mounted durable storage (NFS in Azure) and survives container restarts
- *     and scale-to-zero events. It is encrypted at rest with AES-256-GCM
- *     when GRAPH_TOKEN_CACHE_ENCRYPTION_KEY is configured.
- *
- *   - If the MSAL cache contains multiple accounts, this is treated as an
- *     invalid state. The correct account is selected by OID match — never
- *     by picking the first account.
- *
- *   - EXPECTED_AAD_OBJECT_ID is REQUIRED. Without it, the gateway refuses
- *     to operate (login, token acquisition, identity verification all fail).
- *     This ensures every deployment is pinned to exactly one Entra identity.
- *
- *   Do NOT refactor this into a shared auth service, multi-user token broker,
- *   ConfidentialClientApplication, or OBO architecture.
+ * Single-user delegated Graph auth.
+ * This module intentionally keeps one MSAL cache and one Graph client per
+ * gateway instance, and pins account selection to EXPECTED_AAD_OBJECT_ID.
  */
 
 import fs from 'fs';
@@ -48,27 +22,20 @@ import { resolveStoragePath, requireUserSlug } from '../utils/helpers.js';
 import { log } from '../utils/log.js';
 import { encryptTokenCache, decryptTokenCache, parseEncryptionKey, isEncryptedCache } from './crypto.js';
 import { atomicWriteFile, safeReadFile } from '../utils/file.js';
-import { sendNotification } from '../mcp/server.js';
-import type { LoginMode, DeviceCodeInfo } from '../utils/types.js';
-
-// ── Single-user module state ────────────────────────────────────────────────
-// These singletons are safe because one gateway = one Microsoft identity.
+import { isObjectId, normalizeObjectId, parseObjectId } from '../utils/object-id.js';
+import type { AuthStatusResult, DeviceCodeInfo, IdentityVerificationResult, LoginMode } from './types.js';
 
 let msal: PublicClientApplication | null = null;
 let graph: Client | null = null;
 
-/**
- * Convenience cache of the current account. Updated by resolveAccount()
- * and login flows. NOT a fallback for ambiguous identity resolution —
- * resolveAccount() enforces OID-based selection independently.
- */
-let lastKnownAccount: AccountInfo | null = null;
-
-/** Whether we have already logged the "no encryption key" warning. */
 let encryptionWarningLogged = false;
 let lastIdentityMismatchError: string | null = null;
+type AuthNotifier = (info: DeviceCodeInfo) => void;
+let authNotifier: AuthNotifier | null = null;
 
-// ── Token cache path ────────────────────────────────────────────────────────
+export function setAuthNotifier(notifier: AuthNotifier | null): void {
+  authNotifier = notifier;
+}
 
 async function getTokenCachePath(): Promise<string> {
   const dir = resolveStoragePath(loadConfig().storage.tokenPath);
@@ -82,19 +49,8 @@ async function getTokenCacheMetadataPath(): Promise<string> {
   return path.join(dir, 'token-cache.meta.json');
 }
 
-function normalizeObjectId(value: string): string {
-  return value.trim().toLowerCase();
-}
-
-function isObjectId(value: string): boolean {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
-}
-
 function expectedObjectId(): string | null {
-  const raw = loadConfig().server.expectedAadObjectId;
-  if (!raw) return null;
-  const normalized = normalizeObjectId(raw);
-  return isObjectId(normalized) ? normalized : null;
+  return parseObjectId(loadConfig().server.expectedAadObjectId);
 }
 
 /**
@@ -119,8 +75,6 @@ function extractAccountObjectId(account: AccountInfo): string | null {
 
   return null;
 }
-
-// ── Account matching by OID ─────────────────────────────────────────────────
 
 type AccountMatchResult =
   | { kind: 'matched'; account: AccountInfo }
@@ -153,7 +107,6 @@ function findMatchingAccount(accounts: AccountInfo[], expectedOid: string): Acco
     return { kind: 'no_match', cached: accounts, reason };
   }
 
-  // >1 matches — this should never happen, fail closed
   return {
     kind: 'multi_match',
     cached: accounts,
@@ -198,16 +151,18 @@ async function writeTokenCacheMetadata(expectedOid: string): Promise<void> {
   const slug = requireUserSlug();
   const now = new Date().toISOString();
 
-  // Preserve created_at from existing metadata
   let createdAt = now;
   try {
     const existing = await safeReadFile(metaPath);
-    if (existing) {
+    if (existing && existing.trim()) {
       const parsed = JSON.parse(existing) as Partial<TokenCacheMetadata>;
       if (parsed.created_at) createdAt = parsed.created_at;
     }
-  } catch {
-    // ignore parse errors — overwrite with fresh metadata
+  } catch (err) {
+    log.warn('Ignoring invalid token cache metadata and rewriting it', {
+      path: metaPath,
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 
   const metadata: TokenCacheMetadata = {
@@ -218,6 +173,17 @@ async function writeTokenCacheMetadata(expectedOid: string): Promise<void> {
   };
 
   await atomicWriteFile(metaPath, JSON.stringify(metadata, null, 2), 0o600);
+}
+
+async function writeTokenCacheMetadataBestEffort(expectedOid: string, context: string): Promise<void> {
+  try {
+    await writeTokenCacheMetadata(expectedOid);
+  } catch (err) {
+    log.warn('Failed to write token cache metadata', {
+      context,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 // ── Encryption key (resolved once, cached) ──────────────────────────────────
@@ -241,13 +207,15 @@ function createCachePlugin(): ICachePlugin {
     async beforeCacheAccess(ctx: TokenCacheContext): Promise<void> {
       const cachePath = await getTokenCachePath();
       const raw = await safeReadFile(cachePath);
-      if (!raw) return; // no cache file yet — fresh state
+      if (raw === null) return;
+      if (raw.length === 0) {
+        throw new Error('TOKEN_CACHE_CORRUPTED: token cache file is empty. Run --logout and re-authenticate.');
+      }
 
       const key = getEncryptionKey();
       let json: string;
 
       if (key && isEncryptedCache(raw)) {
-        // Normal path: encrypted cache + key available
         try {
           json = decryptTokenCache(raw, key);
         } catch (err) {
@@ -256,17 +224,11 @@ function createCachePlugin(): ICachePlugin {
             'CACHE_DECRYPTION_FAILED: could not decrypt token cache — wrong key or corrupt file. Run --logout and re-authenticate.',
           );
         }
-      } else if (key && !isEncryptedCache(raw)) {
-        // Migration: plaintext cache exists but encryption key is now set.
-        // Encrypt the file eagerly — afterCacheAccess only fires when MSAL
-        // considers the cache "changed", which won't happen on read-only
-        // operations like health checks or silent token acquisition.
-        log.warn('Migrating plaintext token cache to encrypted format');
-        await atomicWriteFile(cachePath, encryptTokenCache(raw, key), 0o600);
-        log.info('Token cache migration to encrypted format complete');
-        json = raw;
+      } else if (key) {
+        throw new Error(
+          'CACHE_DECRYPTION_FAILED: token cache is not encrypted but GRAPH_TOKEN_CACHE_ENCRYPTION_KEY is set. Clear the cache and re-authenticate.',
+        );
       } else {
-        // No encryption key configured — read as plaintext
         json = raw;
       }
 
@@ -322,7 +284,6 @@ async function resolveAccount(): Promise<AccountInfo | null> {
   const accounts = await app.getTokenCache().getAllAccounts();
 
   if (accounts.length === 0) {
-    lastKnownAccount = null;
     return null;
   }
 
@@ -330,16 +291,13 @@ async function resolveAccount(): Promise<AccountInfo | null> {
 
   switch (result.kind) {
     case 'matched':
-      lastKnownAccount = result.account;
       lastIdentityMismatchError = null;
       return result.account;
 
     case 'no_match': {
-      // Wrong user's cache — quarantine it
       const reason = `AUTH_MISMATCH: ${result.reason}`;
       await quarantineTokenCache(reason);
       lastIdentityMismatchError = reason;
-      lastKnownAccount = null;
       msal = null;
       graph = null;
       log.error('Account resolution failed — no OID match; cache quarantined', {
@@ -354,7 +312,6 @@ async function resolveAccount(): Promise<AccountInfo | null> {
       const reason = `TOKEN_CACHE_CORRUPTED: ${result.reason}`;
       await quarantineTokenCache(reason);
       lastIdentityMismatchError = reason;
-      lastKnownAccount = null;
       msal = null;
       graph = null;
       log.error('Multiple accounts match expected OID — cache quarantined', {
@@ -381,9 +338,6 @@ export async function isLoggedIn(): Promise<boolean> {
 // ── Login flows ─────────────────────────────────────────────────────────────
 
 // ── Device code flow state ──────────────────────────────────────────────────
-// These track a background device-code login that the caller can poll via
-// deviceCodeLoginStatus().
-
 let pendingDeviceCodeInfo: DeviceCodeInfo | null = null;
 let pendingDeviceCodePromise: Promise<void> | null = null;
 let pendingDeviceCodeError: string | null = null;
@@ -417,11 +371,8 @@ function isPendingDeviceCodeExpired(now = Date.now()): boolean {
  * use `deviceCodeLoginStatus()` to poll for completion.
  */
 export async function startDeviceCodeLogin(): Promise<DeviceCodeInfo> {
-  // Guard: OID must be configured before any login
   requireExpectedObjectId();
 
-  // If there's already a pending flow, return the existing code info unless
-  // it has already expired (stale state).
   if (pendingDeviceCodeInfo && pendingDeviceCodePromise) {
     if (isPendingDeviceCodeExpired()) {
       pendingDeviceCodeError = 'AUTH_EXPIRED: device code expired — start login_device again';
@@ -445,8 +396,6 @@ export async function startDeviceCodeLogin(): Promise<DeviceCodeInfo> {
 
   const app = await getMsal();
 
-  // Promise that resolves once the deviceCodeCallback fires (fast — happens
-  // almost immediately when MSAL contacts the /devicecode endpoint).
   let resolveCodeReady: () => void;
   const codeReady = new Promise<void>((resolve) => {
     resolveCodeReady = resolve;
@@ -465,14 +414,8 @@ export async function startDeviceCodeLogin(): Promise<DeviceCodeInfo> {
       };
       pendingDeviceCodeExpiresAtMs = Date.now() + res.expiresIn * 1000;
 
-      // Emit MCP logging notification (reaches the client in stdio mode)
-      sendNotification('notice', 'auth', {
-        message: res.message,
-        verification_uri: res.verificationUri,
-        user_code: res.userCode,
-      });
+      authNotifier?.(pendingDeviceCodeInfo);
 
-      // Also log to stderr as a fallback for non-MCP (CLI) usage
       log.info('Device code login', {
         verification_uri: res.verificationUri,
         user_code: res.userCode,
@@ -482,17 +425,13 @@ export async function startDeviceCodeLogin(): Promise<DeviceCodeInfo> {
     },
   };
 
-  // Start the token acquisition but do NOT await it — let it run in the
-  // background so we can return the code to the caller immediately.
   pendingDeviceCodePromise = app
     .acquireTokenByDeviceCode(request)
     .then(async (response) => {
       if (activeDeviceCodeFlowSeq !== flowSeq) return;
       if (!response?.account) throw new Error('LOGIN_FAILED: device code login did not return an account');
-      lastKnownAccount = response.account;
-      // Write metadata on successful login
       const oid = expectedObjectId();
-      if (oid) await writeTokenCacheMetadata(oid).catch(() => {});
+      if (oid) await writeTokenCacheMetadataBestEffort(oid, 'device_login');
     })
     .catch((err) => {
       if (activeDeviceCodeFlowSeq !== flowSeq) return;
@@ -503,7 +442,6 @@ export async function startDeviceCodeLogin(): Promise<DeviceCodeInfo> {
       clearPendingDeviceCodeState();
     });
 
-  // Wait only for the callback to fire (fast — typically <1s)
   await codeReady;
   return pendingDeviceCodeInfo!;
 }
@@ -527,7 +465,6 @@ export function deviceCodeLoginStatus(): { pending: boolean; error: string | nul
  */
 async function loginDeviceCode(): Promise<void> {
   await startDeviceCodeLogin();
-  // Now await the background promise to completion
   if (pendingDeviceCodePromise) {
     await pendingDeviceCodePromise;
   }
@@ -537,7 +474,6 @@ async function loginDeviceCode(): Promise<void> {
 }
 
 async function loginInteractive(): Promise<void> {
-  // Guard: OID must be configured before any login
   requireExpectedObjectId();
 
   const app = await getMsal();
@@ -550,11 +486,9 @@ async function loginInteractive(): Promise<void> {
   });
 
   if (!response?.account) throw new Error('LOGIN_FAILED: interactive login did not return an account');
-  lastKnownAccount = response.account;
 
-  // Write metadata on successful login
   const oid = expectedObjectId();
-  if (oid) await writeTokenCacheMetadata(oid).catch(() => {});
+  if (oid) await writeTokenCacheMetadataBestEffort(oid, 'interactive_login');
 }
 
 export async function login(mode: LoginMode): Promise<void> {
@@ -567,7 +501,6 @@ export async function login(mode: LoginMode): Promise<void> {
     await loginInteractive();
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    // Re-throw CONFIG_ERROR as-is
     if (message.startsWith('CONFIG_ERROR')) throw error;
     throw new Error(`INTERACTIVE_LOGIN_FAILED: ${message}. Use --login-device if running headless.`);
   }
@@ -576,8 +509,6 @@ export async function login(mode: LoginMode): Promise<void> {
 // ── Logout ──────────────────────────────────────────────────────────────────
 
 export async function logout(): Promise<void> {
-  // Clear in-memory state
-  lastKnownAccount = null;
   msal = null;
   graph = null;
   resolvedKey = undefined; // allow re-resolution on next access
@@ -587,7 +518,6 @@ export async function logout(): Promise<void> {
   pendingDeviceCodeExpiresAtMs = null;
   activeDeviceCodeFlowSeq = null;
 
-  // Remove token cache file
   const cachePath = await getTokenCachePath();
   try {
     await fs.promises.unlink(cachePath);
@@ -601,12 +531,14 @@ export async function logout(): Promise<void> {
     }
   }
 
-  // Remove metadata file
   const metaPath = await getTokenCacheMetadataPath();
   try {
     await fs.promises.unlink(metaPath);
-  } catch {
-    // ignore — metadata file is best-effort
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') {
+      log.warn('Failed to remove token cache metadata file', { path: metaPath, error: err instanceof Error ? err.message : String(err) });
+    }
   }
 }
 
@@ -626,7 +558,6 @@ export async function getAccessToken(): Promise<string> {
   const scopes = loadConfig().scopes;
   let lastError: unknown;
 
-  // Retry once on transient failures (network glitches, MSAL service hiccups)
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const response = await app.acquireTokenSilent({ scopes, account });
@@ -634,11 +565,9 @@ export async function getAccessToken(): Promise<string> {
     } catch (error) {
       lastError = error;
       if (error instanceof InteractionRequiredAuthError) {
-        // Non-transient — user must re-authenticate, no retry
         log.warn('Token expired, re-authentication required');
         throw new Error('AUTH_EXPIRED: run --login to re-authenticate');
       }
-      // Conditional Access sign-in frequency or revoked refresh token
       const errMsg = error instanceof Error ? error.message : String(error);
       if (errMsg.includes('AADSTS70043') || errMsg.includes('invalid_grant')) {
         log.warn('Refresh token expired (Conditional Access policy)', { error: errMsg });
@@ -674,16 +603,6 @@ export function getGraph(): Client {
 }
 
 // ── Startup identity verification ───────────────────────────────────────────
-
-export interface IdentityVerificationResult {
-  checked: boolean;
-  mismatch: boolean;
-  cached_user: string | null;
-  cached_object_id: string | null;
-  expected_object_id: string | null;
-  reason?: string;
-  quarantined_path?: string;
-}
 
 /**
  * Verify that the cached MSAL identity matches the expected Entra object ID for this
@@ -729,8 +648,7 @@ export async function verifyIdentityBinding(): Promise<IdentityVerificationResul
       const cachedOid = extractAccountObjectId(account);
       log.info('Identity verified', { slug, user: cachedUser, object_id: cachedOid });
 
-      // Write/update metadata on successful verification
-      await writeTokenCacheMetadata(expectedOid).catch(() => {});
+      await writeTokenCacheMetadataBestEffort(expectedOid, 'identity_verification');
 
       return {
         checked: true,
@@ -750,21 +668,13 @@ export async function verifyIdentityBinding(): Promise<IdentityVerificationResul
         cached_count: accounts.length,
       });
 
-      let quarantinedPath: string | null = null;
-      try {
-        quarantinedPath = await quarantineTokenCache(reason);
-      } catch {
-        quarantinedPath = null;
-      }
+      const quarantinedPath = await quarantineTokenCache(reason);
 
-      // Clear all in-memory auth state — force fresh login
       lastIdentityMismatchError = reason;
-      lastKnownAccount = null;
       msal = null;
       graph = null;
       resolvedKey = undefined;
 
-      // Report the first cached account for diagnostics
       const firstAccount = accounts[0];
       const cachedUser = firstAccount?.username ?? null;
       const cachedOid = firstAccount ? extractAccountObjectId(firstAccount) : null;
@@ -788,15 +698,9 @@ export async function verifyIdentityBinding(): Promise<IdentityVerificationResul
         match_count: accounts.length,
       });
 
-      let quarantinedPath: string | null = null;
-      try {
-        quarantinedPath = await quarantineTokenCache(reason);
-      } catch {
-        quarantinedPath = null;
-      }
+      const quarantinedPath = await quarantineTokenCache(reason);
 
       lastIdentityMismatchError = reason;
-      lastKnownAccount = null;
       msal = null;
       graph = null;
       resolvedKey = undefined;
@@ -816,40 +720,14 @@ export async function verifyIdentityBinding(): Promise<IdentityVerificationResul
 
 // ── Auth diagnostics ────────────────────────────────────────────────────────
 
-export interface AuthStatusResult {
-  logged_in: boolean;
-  user: string | null;
-  cache_file_exists: boolean;
-  cache_encrypted: boolean;
-  cache_decryptable: boolean;
-  encryption_key_configured: boolean;
-  account_count: number;
-  graph_reachable: boolean;
-  device_code_pending: boolean;
-  expected_object_id: string | null;
-  actual_object_id: string | null;
-  identity_match: boolean | null;
-  identity_binding_status: 'valid' | 'invalid' | 'missing';
-  device_code_verification_uri?: string;
-  device_code_user_code?: string;
-  error?: string;
-}
-
 /**
  * Lightweight diagnostics for auth troubleshooting.
  * Does NOT throw — returns structured status even on failures.
  * Catches CONFIG_ERROR internally and reports identity_binding_status: 'missing'.
  */
 export async function authStatus(): Promise<AuthStatusResult> {
-  // Determine expected OID without throwing
-  let resolvedExpectedOid: string | null = null;
-  let oidConfigMissing = false;
-  try {
-    resolvedExpectedOid = expectedObjectId();
-    if (!resolvedExpectedOid) oidConfigMissing = true;
-  } catch {
-    oidConfigMissing = true;
-  }
+  const resolvedExpectedOid = expectedObjectId();
+  const oidConfigMissing = !resolvedExpectedOid;
 
   const result: AuthStatusResult = {
     logged_in: false,
@@ -867,7 +745,6 @@ export async function authStatus(): Promise<AuthStatusResult> {
     identity_binding_status: oidConfigMissing ? 'missing' : 'invalid',
   };
 
-  // Include device code info if a flow is in progress
   if (pendingDeviceCodeInfo) {
     result.device_code_verification_uri = pendingDeviceCodeInfo.verificationUri;
     result.device_code_user_code = pendingDeviceCodeInfo.userCode;
@@ -878,22 +755,19 @@ export async function authStatus(): Promise<AuthStatusResult> {
     return result;
   }
 
-  // Check encryption key
   try {
     result.encryption_key_configured = getEncryptionKey() !== null;
   } catch {
     result.encryption_key_configured = false;
   }
 
-  // Check cache file
   const cachePath = await getTokenCachePath();
   const raw = await safeReadFile(cachePath);
   result.cache_file_exists = raw !== null;
 
-  if (raw) {
+  if (raw !== null) {
     result.cache_encrypted = isEncryptedCache(raw);
 
-    // Try to decrypt/parse
     try {
       const key = getEncryptionKey();
       let json: string;
@@ -902,7 +776,6 @@ export async function authStatus(): Promise<AuthStatusResult> {
       } else {
         json = raw;
       }
-      // Verify it's valid JSON
       JSON.parse(json);
       result.cache_decryptable = true;
     } catch {
@@ -910,7 +783,6 @@ export async function authStatus(): Promise<AuthStatusResult> {
     }
   }
 
-  // Check accounts using OID-based matching
   try {
     const app = await getMsal();
     const accounts = await app.getTokenCache().getAllAccounts();
@@ -958,7 +830,6 @@ export async function authStatus(): Promise<AuthStatusResult> {
     }
   }
 
-  // Check Graph reachability (only if logged in)
   if (result.logged_in) {
     try {
       await getGraph().api('/me').select('id').get();

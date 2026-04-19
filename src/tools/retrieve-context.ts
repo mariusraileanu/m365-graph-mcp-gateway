@@ -9,13 +9,14 @@
  */
 
 import { z } from 'zod';
-import { isLoggedIn } from '../auth/index.js';
-import { ok } from '../utils/helpers.js';
 import { loadConfig } from '../config/index.js';
 import { retrieveContext, retrieveContextBatch } from '../graph/copilot-retrieval.js';
 import { buildKqlFilter, supportedKqlFields, isValidKqlExpression } from '../utils/kql.js';
+import { ok } from './results.js';
+import { requireLoggedIn } from './shared.js';
 import type { RetrievalDataSource, RetrievalResult } from '../graph/copilot-retrieval.js';
-import type { ToolSpec } from '../utils/types.js';
+import { defineTool } from './types.js';
+import type { ToolSpec } from './types.js';
 
 /** Max query length enforced by the Retrieval API. */
 const MAX_QUERY_CHARS = 1500;
@@ -26,6 +27,7 @@ function formatResult(r: RetrievalResult): Record<string, unknown> {
     query: r.queryString,
     data_source: r.dataSource,
     hit_count: r.hitCount,
+    ...(r.error ? { error: { ...(typeof r.error.status === 'number' ? { status: r.error.status } : {}), message: r.error.message } } : {}),
     hits: r.hits.map((h) => ({
       web_url: h.webUrl ?? '',
       resource_type: h.resourceType ?? '',
@@ -40,9 +42,9 @@ function formatResult(r: RetrievalResult): Record<string, unknown> {
 }
 
 /** Build filter expression from structured params or raw expression. */
-function resolveFilter(params: Record<string, unknown>): string | undefined {
+function resolveFilter(params: RetrievalFilterParams): string | undefined {
   // Raw expression takes precedence
-  if (typeof params.filter_expression === 'string' && params.filter_expression.trim()) {
+  if (params.filter_expression?.trim()) {
     const raw = params.filter_expression.trim();
     if (!isValidKqlExpression(raw)) {
       throw new Error(
@@ -56,25 +58,25 @@ function resolveFilter(params: Record<string, unknown>): string | undefined {
   // Build from structured filter params
   const clauses: Array<{ field: string; operator?: ':' | '=' | '>' | '<' | '>=' | '<='; value: string }> = [];
 
-  if (typeof params.filter_author === 'string' && params.filter_author.trim()) {
+  if (params.filter_author?.trim()) {
     clauses.push({ field: 'Author', value: params.filter_author.trim() });
   }
-  if (typeof params.filter_file_extension === 'string' && params.filter_file_extension.trim()) {
+  if (params.filter_file_extension?.trim()) {
     clauses.push({ field: 'FileExtension', operator: '=', value: params.filter_file_extension.trim() });
   }
-  if (typeof params.filter_filename === 'string' && params.filter_filename.trim()) {
+  if (params.filter_filename?.trim()) {
     clauses.push({ field: 'Filename', value: params.filter_filename.trim() });
   }
-  if (typeof params.filter_path === 'string' && params.filter_path.trim()) {
+  if (params.filter_path?.trim()) {
     clauses.push({ field: 'Path', value: params.filter_path.trim() });
   }
-  if (typeof params.filter_site_id === 'string' && params.filter_site_id.trim()) {
+  if (params.filter_site_id?.trim()) {
     clauses.push({ field: 'SiteID', operator: '=', value: params.filter_site_id.trim() });
   }
-  if (typeof params.filter_title === 'string' && params.filter_title.trim()) {
+  if (params.filter_title?.trim()) {
     clauses.push({ field: 'Title', value: params.filter_title.trim() });
   }
-  if (typeof params.filter_modified_after === 'string' && params.filter_modified_after.trim()) {
+  if (params.filter_modified_after?.trim()) {
     clauses.push({ field: 'LastModifiedTime', operator: '>', value: params.filter_modified_after.trim() });
   }
 
@@ -99,8 +101,11 @@ const filterSchemaFields = {
   filter_join: z.enum(['AND', 'OR']).default('AND').optional().describe('Join structured filters with AND (default) or OR.'),
 };
 
+const retrievalFilterSchema = z.object(filterSchemaFields);
+type RetrievalFilterParams = z.output<typeof retrievalFilterSchema>;
+
 export const retrievalTools: ToolSpec[] = [
-  {
+  defineTool({
     name: 'retrieve_context',
     description:
       'Semantic search across Microsoft 365 content using the Copilot Retrieval API. ' +
@@ -121,11 +126,11 @@ export const retrievalTools: ToolSpec[] = [
       })
       .strict(),
     run: async (params) => {
-      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
+      await requireLoggedIn();
 
-      const query = String(params.query).trim();
-      const dataSource = (params.data_source ?? 'sharePoint') as RetrievalDataSource;
-      const maxResults = typeof params.max_results === 'number' ? params.max_results : (loadConfig().search.defaultTop ?? 10);
+      const query = params.query.trim();
+      const dataSource: RetrievalDataSource = params.data_source ?? 'sharePoint';
+      const maxResults = params.max_results ?? (loadConfig().search.defaultTop ?? 10);
 
       const filterExpression = resolveFilter(params);
 
@@ -149,8 +154,8 @@ export const retrievalTools: ToolSpec[] = [
         max_results: maxResults,
       });
     },
-  },
-  {
+  }),
+  defineTool({
     name: 'retrieve_context_multi',
     description:
       'Batched semantic search — send up to 20 queries in a single Graph $batch call. ' +
@@ -173,11 +178,11 @@ export const retrievalTools: ToolSpec[] = [
       })
       .strict(),
     run: async (params) => {
-      if (!(await isLoggedIn())) throw new Error('AUTH_REQUIRED: not logged in');
+      await requireLoggedIn();
 
-      const queries = (params.queries as string[]).map((q) => String(q).trim());
-      const dataSource = (params.data_source ?? 'sharePoint') as RetrievalDataSource;
-      const maxResults = typeof params.max_results === 'number' ? params.max_results : (loadConfig().search.defaultTop ?? 10);
+      const queries = params.queries.map((q) => q.trim());
+      const dataSource: RetrievalDataSource = params.data_source ?? 'sharePoint';
+      const maxResults = params.max_results ?? (loadConfig().search.defaultTop ?? 10);
 
       const filterExpression = resolveFilter(params);
 
@@ -185,6 +190,9 @@ export const retrievalTools: ToolSpec[] = [
 
       const formatted = results.map(formatResult);
       const totalHits = results.reduce((sum, r) => sum + r.hitCount, 0);
+      const errors = results
+        .filter((result) => result.error)
+        .map((result) => ({ query: result.queryString, ...(result.error?.status ? { status: result.error.status } : {}), message: result.error!.message }));
 
       return ok(`Batch: ${queries.length} queries, ${totalHits} total hits from ${dataSource}.`, {
         query_count: queries.length,
@@ -193,7 +201,8 @@ export const retrievalTools: ToolSpec[] = [
         ...(filterExpression ? { filter_expression: filterExpression } : {}),
         max_results: maxResults,
         results: formatted,
+        ...(errors.length > 0 ? { errors } : {}),
       });
     },
-  },
+  }),
 ];

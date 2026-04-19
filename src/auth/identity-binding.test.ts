@@ -105,12 +105,6 @@ mock.module('@azure/msal-node', {
 
 mock.module('open', { defaultExport: async () => {} });
 
-mock.module('../mcp/server.js', {
-  namedExports: {
-    sendNotification: () => {},
-  },
-});
-
 const { verifyIdentityBinding } = await import('./index.js');
 
 describe('verifyIdentityBinding (OID-based matching)', () => {
