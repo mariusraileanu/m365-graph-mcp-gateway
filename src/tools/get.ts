@@ -1,26 +1,22 @@
 import { z } from 'zod';
 import { getGraph } from '../auth/index.js';
-import {
-  includeFull,
-  normalizeTop,
-  compactText,
-  escapeODataString,
-  graphMailboxPath,
-  normalizeMailboxUser,
-} from '../utils/helpers.js';
+import { includeFull, normalizeTop, compactText, escapeODataString, graphMailboxPath, normalizeMailboxUser } from '../utils/helpers.js';
 import { loadConfig } from '../config/index.js';
 import { pickMail } from '../graph/mail.js';
 import { EVENT_FULL_SELECT, EVENT_MINIMAL_SELECT, pickEvent, resolveTimezone } from '../graph/calendar.js';
-import { downloadDriveItemContent, getDriveItem, getDriveItemInfo, pickFile } from '../graph/files.js';
+import {
+  downloadDriveItemContent,
+  downloadDriveItemContentByUrl,
+  getDriveItem,
+  getDriveItemByUrl,
+  getDriveItemInfo,
+  pickFile,
+} from '../graph/files.js';
 import { parseFile, isSupportedForParsing, supportedParseExtensions } from '../parsers/index.js';
 import { ok, fail } from './results.js';
 import { requireLoggedIn, readThroughGraphCache, GRAPH_CACHE_TTL_MS } from './shared.js';
 import { defineTool } from './types.js';
-import type {
-  GraphCollectionResponse,
-  GraphEvent,
-  GraphMailMessage,
-} from '../graph/types.js';
+import type { GraphCollectionResponse, GraphEvent, GraphMailMessage } from '../graph/types.js';
 
 /** Max file size for in-memory buffering (10 MB). */
 const INLINE_MAX_BYTES = 10 * 1024 * 1024;
@@ -138,10 +134,7 @@ export const getTools = [
 
       // Sort client-side (oldest-first) — Exchange Online rejects $orderby combined with $filter on conversationId
       const messages = (response.value ?? [])
-        .sort(
-          (a, b) =>
-            new Date(String(a.receivedDateTime ?? '')).getTime() - new Date(String(b.receivedDateTime ?? '')).getTime(),
-        )
+        .sort((a, b) => new Date(String(a.receivedDateTime ?? '')).getTime() - new Date(String(b.receivedDateTime ?? '')).getTime())
         .map((m) => pickMail(m, full));
 
       return ok(`Thread: ${messages.length} message(s).`, {
@@ -197,7 +190,9 @@ export const getTools = [
       const itemId = params.item_id;
       const mode = params.mode ?? 'metadata';
 
-      const meta = await readThroughGraphCache(`file:${params.drive_id}:${params.item_id}`, GRAPH_CACHE_TTL_MS, () => getDriveItem(driveId, itemId));
+      const meta = await readThroughGraphCache(`file:${params.drive_id}:${params.item_id}`, GRAPH_CACHE_TTL_MS, () =>
+        getDriveItem(driveId, itemId),
+      );
       const { size: fileSize, name: fileName, mimeType, downloadUrl, webUrl } = getDriveItemInfo(meta);
 
       if (mode === 'metadata') {
@@ -291,6 +286,123 @@ export const getTools = [
         encoding: 'base64',
         content: buffer.toString('base64'),
         truncated: false,
+      });
+    },
+  }),
+  defineTool({
+    name: 'get_file_by_url',
+    description:
+      'Access a OneDrive/SharePoint file directly from its Teams/SharePoint URL using Graph shares. ' +
+      'Use this for Teams attachments when you have contentUrl/webUrl but not drive_id/item_id. ' +
+      'Modes match get_file_content: metadata, inline, binary, parsed.',
+    schema: z
+      .object({
+        url: z.string().url(),
+        mode: z.enum(['metadata', 'inline', 'binary', 'parsed']).default('metadata'),
+        max_chars: z.number().int().positive().max(50000).optional(),
+        include_full: z.boolean().optional(),
+      })
+      .strict(),
+    run: async (params) => {
+      await requireLoggedIn();
+
+      const rawUrl = params.url.trim();
+      const mode = params.mode ?? 'metadata';
+      const meta = await getDriveItemByUrl(rawUrl);
+      const { size: fileSize, name: fileName, mimeType, downloadUrl, webUrl } = getDriveItemInfo(meta);
+
+      if (mode === 'metadata') {
+        return ok(`File metadata: ${fileName}`, {
+          ...pickFile(meta, includeFull(params)),
+          mime_type: mimeType,
+          download_url: downloadUrl,
+          web_url: webUrl ?? rawUrl,
+        });
+      }
+
+      if (mode === 'parsed') {
+        if (!isSupportedForParsing(fileName)) {
+          return fail('UNSUPPORTED_FILE_TYPE', `File '${fileName}' cannot be parsed. Supported: ${supportedParseExtensions().join(', ')}`, {
+            name: fileName,
+            mime_type: mimeType,
+            download_url: downloadUrl,
+            web_url: webUrl ?? rawUrl,
+          });
+        }
+
+        if (fileSize > PARSED_MAX_BYTES) {
+          return fail(
+            'FILE_TOO_LARGE',
+            `File '${fileName}' is ${fileSize} bytes (limit: ${PARSED_MAX_BYTES} for parsed mode). Use the download_url instead.`,
+            { name: fileName, size_bytes: fileSize, limit_bytes: PARSED_MAX_BYTES, download_url: downloadUrl, web_url: webUrl ?? rawUrl },
+          );
+        }
+
+        const buffer = await downloadDriveItemContentByUrl(rawUrl);
+        const maxChars = params.max_chars ?? 50_000;
+        const parsed = await parseFile(buffer, fileName, maxChars);
+
+        return ok(`Parsed: ${fileName}`, {
+          name: parsed.file_name,
+          document_type: parsed.document_type,
+          size_bytes: parsed.size_bytes,
+          content: parsed.content,
+          truncated: parsed.truncated,
+          char_count: parsed.char_count,
+          metadata: parsed.metadata,
+          web_url: webUrl ?? rawUrl,
+        });
+      }
+
+      if (fileSize > INLINE_MAX_BYTES) {
+        return fail(
+          'FILE_TOO_LARGE',
+          `File '${fileName}' is ${fileSize} bytes (limit: ${INLINE_MAX_BYTES}). Use metadata mode for a download_url instead.`,
+          {
+            name: fileName,
+            size_bytes: fileSize,
+            limit_bytes: INLINE_MAX_BYTES,
+            download_url: downloadUrl,
+            web_url: webUrl ?? rawUrl,
+          },
+        );
+      }
+
+      if (mode === 'inline' && !isTextMime(mimeType)) {
+        return fail('UNSUPPORTED_FILE_TYPE', `File '${fileName}' has non-text MIME type '${mimeType}'. Use binary mode or metadata mode.`, {
+          name: fileName,
+          mime_type: mimeType,
+          size_bytes: fileSize,
+          download_url: downloadUrl,
+          web_url: webUrl ?? rawUrl,
+        });
+      }
+
+      const buffer = await downloadDriveItemContentByUrl(rawUrl);
+
+      if (mode === 'inline') {
+        const maxChars = params.max_chars ?? loadConfig().output.defaultMaxChars;
+        const raw = buffer.toString('utf-8');
+        const compact = compactText(raw, maxChars);
+        return ok(`File content: ${fileName}`, {
+          name: fileName,
+          mime_type: mimeType,
+          size_bytes: buffer.length,
+          encoding: 'text',
+          content: compact.text,
+          truncated: compact.truncated,
+          web_url: webUrl ?? rawUrl,
+        });
+      }
+
+      return ok(`File content: ${fileName} (binary)`, {
+        name: fileName,
+        mime_type: mimeType,
+        size_bytes: buffer.length,
+        encoding: 'base64',
+        content: buffer.toString('base64'),
+        truncated: false,
+        web_url: webUrl ?? rawUrl,
       });
     },
   }),

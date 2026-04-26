@@ -56,17 +56,24 @@ mock.module('../utils/log.js', {
 // ── Graph teams mock ────────────────────────────────────────────────────────
 
 let mockResolveMeetingResult: Record<string, unknown> | null = null;
+let mockListChatsResult = { chats: [] as Record<string, unknown>[], count: 0 };
 let mockListTranscriptsResult = { transcripts: [] as Record<string, unknown>[], count: 0 };
 let mockGetTranscriptResult: Record<string, unknown> = {};
 let mockGetTranscriptContentResult = '';
 let mockResolveMeetingError: Error | null = null;
+let mockResolveMeetingImpl: ((joinWebUrl: string) => Promise<Record<string, unknown> | null>) | null = null;
 let mockListTranscriptsError: Error | null = null;
 let mockGetTranscriptError: Error | null = null;
 let mockGetTranscriptContentError: Error | null = null;
+let mockGetTranscriptContentImpl: ((meetingId: string, transcriptId: string) => Promise<string>) | null = null;
+const resolveMeetingCalls: Array<{ joinWebUrl: string }> = [];
+const getTranscriptContentCalls: Array<{ meetingId: string; transcriptId: string }> = [];
 
 mock.module('../graph/teams.js', {
   namedExports: {
-    resolveMeeting: async () => {
+    resolveMeeting: async (joinWebUrl: string) => {
+      resolveMeetingCalls.push({ joinWebUrl });
+      if (mockResolveMeetingImpl) return await mockResolveMeetingImpl(joinWebUrl);
       if (mockResolveMeetingError) throw mockResolveMeetingError;
       return mockResolveMeetingResult;
     },
@@ -78,7 +85,9 @@ mock.module('../graph/teams.js', {
       if (mockGetTranscriptError) throw mockGetTranscriptError;
       return mockGetTranscriptResult;
     },
-    getTranscriptContent: async () => {
+    getTranscriptContent: async (meetingId: string, transcriptId: string) => {
+      getTranscriptContentCalls.push({ meetingId, transcriptId });
+      if (mockGetTranscriptContentImpl) return await mockGetTranscriptContentImpl(meetingId, transcriptId);
       if (mockGetTranscriptContentError) throw mockGetTranscriptContentError;
       return mockGetTranscriptContentResult;
     },
@@ -89,7 +98,7 @@ mock.module('../graph/teams.js', {
     }),
     pickChat: (c: Record<string, unknown>) => c,
     pickMessage: (m: Record<string, unknown>) => m,
-    listChats: async () => ({ chats: [], count: 0 }),
+    listChats: async () => mockListChatsResult,
     getChat: async () => ({}),
     listChatMessages: async () => ({ messages: [], count: 0 }),
     getChatMessage: async () => ({}),
@@ -125,13 +134,18 @@ async function callTool(name: string, args: Record<string, unknown>) {
 function resetTracking() {
   loggedIn = true;
   mockResolveMeetingResult = null;
+  mockListChatsResult = { chats: [], count: 0 };
   mockListTranscriptsResult = { transcripts: [], count: 0 };
   mockGetTranscriptResult = {};
   mockGetTranscriptContentResult = '';
   mockResolveMeetingError = null;
+  mockResolveMeetingImpl = null;
   mockListTranscriptsError = null;
   mockGetTranscriptError = null;
   mockGetTranscriptContentError = null;
+  mockGetTranscriptContentImpl = null;
+  resolveMeetingCalls.length = 0;
+  getTranscriptContentCalls.length = 0;
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -256,6 +270,66 @@ describe('get_meeting_transcript', () => {
   });
 });
 
+describe('get_latest_meeting_transcript', () => {
+  beforeEach(() => resetTracking());
+
+  it('finds a meeting chat by title and returns the newest transcript content', async () => {
+    mockListChatsResult = {
+      count: 1,
+      chats: [
+        {
+          id: 'chat-1',
+          topic: 'AI | Agents Daily Standup',
+          chatType: 'meeting',
+          onlineMeetingInfo: { joinWebUrl: 'https://teams.microsoft.com/l/meetup-join/abc' },
+        },
+      ],
+    };
+    mockResolveMeetingResult = {
+      id: 'meeting-1',
+      subject: 'AI | Agents Daily Standup',
+      joinWebUrl: 'https://teams.microsoft.com/l/meetup-join/abc',
+    };
+    mockListTranscriptsResult = {
+      count: 2,
+      transcripts: [
+        { id: 'older-transcript', meetingId: 'meeting-1', createdDateTime: '2026-04-16T06:00:00Z' },
+        { id: 'newest-transcript', meetingId: 'meeting-1', createdDateTime: '2026-04-17T06:00:00Z' },
+      ],
+    };
+    mockGetTranscriptContentResult = 'WEBVTT\n\nstandup notes';
+
+    const result = await callTool('get_latest_meeting_transcript', {
+      query: 'AI Agents Daily Standup',
+      max_chars: 500,
+    });
+
+    assert.ok(!('isError' in result));
+    const sc = result.structuredContent as Record<string, unknown>;
+    assert.equal(sc.available, true);
+    assert.equal(sc.meeting_id, 'meeting-1');
+    assert.equal(sc.transcript_id, 'newest-transcript');
+    assert.equal((sc.meeting as Record<string, unknown>).subject, 'AI | Agents Daily Standup');
+    assert.deepEqual(resolveMeetingCalls, [{ joinWebUrl: 'https://teams.microsoft.com/l/meetup-join/abc' }]);
+    assert.deepEqual(getTranscriptContentCalls, [{ meetingId: 'meeting-1', transcriptId: 'newest-transcript' }]);
+  });
+
+  it('returns MEETING_NOT_RESOLVABLE when no matching meeting chat can be resolved', async () => {
+    mockListChatsResult = {
+      count: 1,
+      chats: [{ id: 'chat-1', topic: 'Other Meeting', chatType: 'meeting' }],
+    };
+
+    const result = await callTool('get_latest_meeting_transcript', {
+      query: 'AI Agents Daily Standup',
+    });
+
+    assert.ok('isError' in result);
+    const sc = result.structuredContent as Record<string, unknown>;
+    assert.equal(sc.error_code, 'MEETING_NOT_RESOLVABLE');
+  });
+});
+
 describe('get_transcript_content', () => {
   beforeEach(() => resetTracking());
 
@@ -295,6 +369,56 @@ describe('get_transcript_content', () => {
     const sc = result.structuredContent as Record<string, unknown>;
     assert.equal(sc.truncated, true);
     assert.ok(String(sc.content).length <= 500);
+  });
+
+  it('uses newest transcript when transcript_id is omitted', async () => {
+    mockListTranscriptsResult = {
+      count: 2,
+      transcripts: [
+        { id: 'older-transcript', meetingId: 'meeting-1', createdDateTime: '2026-04-16T06:00:00Z' },
+        { id: 'newest-transcript', meetingId: 'meeting-1', createdDateTime: '2026-04-17T06:00:00Z' },
+      ],
+    };
+    mockGetTranscriptContentResult = 'WEBVTT\n\nlatest';
+
+    const result = await callTool('get_transcript_content', {
+      meeting_id: 'meeting-1',
+    });
+
+    assert.ok(!('isError' in result));
+    const sc = result.structuredContent as Record<string, unknown>;
+    assert.equal(sc.available, true);
+    assert.equal(sc.transcript_id, 'newest-transcript');
+    assert.equal(sc.used_fallback_latest, true);
+    assert.deepEqual(getTranscriptContentCalls, [{ meetingId: 'meeting-1', transcriptId: 'newest-transcript' }]);
+  });
+
+  it('falls back to newest transcript when the supplied ID is invalid', async () => {
+    mockListTranscriptsResult = {
+      count: 1,
+      transcripts: [{ id: 'full-transcript-id', meetingId: 'meeting-1', createdDateTime: '2026-04-17T06:00:00Z' }],
+    };
+    mockGetTranscriptContentImpl = async (_meetingId, transcriptId) => {
+      if (transcriptId === 'bad-short-id') {
+        throw new Error("UPSTREAM_ERROR: transcript content fetch failed (400) BadRequest: Invalid transcript id 'bad-short-id'");
+      }
+      return 'WEBVTT\n\nrecovered';
+    };
+
+    const result = await callTool('get_transcript_content', {
+      meeting_id: 'meeting-1',
+      transcript_id: 'bad-short-id',
+    });
+
+    assert.ok(!('isError' in result));
+    const sc = result.structuredContent as Record<string, unknown>;
+    assert.equal(sc.available, true);
+    assert.equal(sc.transcript_id, 'full-transcript-id');
+    assert.equal(sc.used_fallback_latest, true);
+    assert.deepEqual(getTranscriptContentCalls, [
+      { meetingId: 'meeting-1', transcriptId: 'bad-short-id' },
+      { meetingId: 'meeting-1', transcriptId: 'full-transcript-id' },
+    ]);
   });
 
   it('throws AUTH_REQUIRED when not logged in', async () => {

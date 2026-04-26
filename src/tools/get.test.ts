@@ -60,7 +60,12 @@ function createChainableClient() {
     return chainable;
   };
   chainable.get = async () => {
-    graphGetCalls.push({ endpoint: currentEndpoint, headers: { ...headers }, filter: currentFilter || undefined, select: currentSelect || undefined });
+    graphGetCalls.push({
+      endpoint: currentEndpoint,
+      headers: { ...headers },
+      filter: currentFilter || undefined,
+      select: currentSelect || undefined,
+    });
     const resp = typeof graphGetResponse === 'function' ? graphGetResponse() : graphGetResponse;
     return resp;
   };
@@ -140,18 +145,30 @@ mock.module('../graph/calendar.js', {
 });
 
 const pickFileCalls: Array<{ item: Record<string, unknown>; includeFull: boolean }> = [];
+function testShareId(rawUrl: string): string {
+  return `u!${Buffer.from(rawUrl, 'utf8').toString('base64url')}`;
+}
+
 mock.module('../graph/files.js', {
   namedExports: {
     getDriveItem: async (driveId: string, itemId: string) => {
       graphGetCalls.push({ endpoint: `/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}`, headers: {} });
       return typeof graphGetResponse === 'function' ? graphGetResponse() : graphGetResponse;
     },
+    getDriveItemByUrl: async (rawUrl: string) => {
+      graphGetCalls.push({ endpoint: `/shares/${testShareId(rawUrl)}/driveItem`, headers: {} });
+      if (!rawUrl.includes('sharepoint.com') && !rawUrl.includes('onedrive.com') && !rawUrl.includes('1drv.ms')) {
+        throw new Error('VALIDATION_ERROR: url must be a SharePoint or OneDrive URL');
+      }
+      return typeof graphGetResponse === 'function' ? graphGetResponse() : graphGetResponse;
+    },
     getDriveItemInfo: (item: Record<string, unknown>) => ({
       name: String(item.name || 'unknown'),
       size: Number(item.size || 0),
-      mimeType: typeof (item.file as { mimeType?: unknown } | undefined)?.mimeType === 'string'
-        ? ((item.file as { mimeType?: string }).mimeType as string)
-        : 'application/octet-stream',
+      mimeType:
+        typeof (item.file as { mimeType?: unknown } | undefined)?.mimeType === 'string'
+          ? ((item.file as { mimeType?: string }).mimeType as string)
+          : 'application/octet-stream',
       downloadUrl: typeof item['@microsoft.graph.downloadUrl'] === 'string' ? item['@microsoft.graph.downloadUrl'] : null,
       webUrl: typeof item.webUrl === 'string' ? item.webUrl : null,
     }),
@@ -160,6 +177,14 @@ mock.module('../graph/files.js', {
       fetchCalls.push({ url });
       if (!fetchResponse.ok) {
         throw new Error(`UPSTREAM_ERROR: file download failed (${fetchResponse.status})`);
+      }
+      return fetchResponse.buffer;
+    },
+    downloadDriveItemContentByUrl: async (rawUrl: string) => {
+      const url = `https://graph.microsoft.com/v1.0/shares/${testShareId(rawUrl)}/driveItem/content`;
+      fetchCalls.push({ url });
+      if (!fetchResponse.ok) {
+        throw new Error(`UPSTREAM_ERROR: file download by URL failed (${fetchResponse.status})`);
       }
       return fetchResponse.buffer;
     },
@@ -193,6 +218,7 @@ const getEventTool = getTools.find((t) => t.name === 'get_event')!;
 const getEmailThreadTool = getTools.find((t) => t.name === 'get_email_thread')!;
 const getFileMetadataTool = getTools.find((t) => t.name === 'get_file_metadata')!;
 const getFileContentTool = getTools.find((t) => t.name === 'get_file_content')!;
+const getFileByUrlTool = getTools.find((t) => t.name === 'get_file_by_url')!;
 
 async function callGetEmail(args: Record<string, unknown>) {
   return getEmailTool.run(getEmailTool.schema.parse(args));
@@ -212,6 +238,10 @@ async function callGetFileMetadata(args: Record<string, unknown>) {
 
 async function callGetFileContent(args: Record<string, unknown>) {
   return getFileContentTool.run(getFileContentTool.schema.parse(args));
+}
+
+async function callGetFileByUrl(args: Record<string, unknown>) {
+  return getFileByUrlTool.run(getFileByUrlTool.schema.parse(args));
 }
 
 function resetTracking() {
@@ -678,6 +708,64 @@ describe('get_file_content — error handling', () => {
   it('throws AUTH_REQUIRED when not logged in', async () => {
     loggedIn = false;
     await assert.rejects(() => callGetFileContent({ drive_id: 'drv-1', item_id: 'item-1', mode: 'inline' }), /AUTH_REQUIRED/);
+  });
+});
+
+describe('get_file_by_url', () => {
+  beforeEach(() => resetTracking());
+
+  it('resolves metadata from a SharePoint URL', async () => {
+    graphGetResponse = {
+      id: 'item-url-1',
+      name: 'notes.docx',
+      size: 1024,
+      file: { mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+      webUrl: 'https://contoso.sharepoint.com/sites/team/Shared%20Documents/notes.docx',
+      '@microsoft.graph.downloadUrl': 'https://download.example.com/notes.docx',
+      parentReference: { driveId: 'drive-1', path: '/drives/drive-1/root:' },
+    };
+
+    const result = await callGetFileByUrl({ url: 'https://contoso.sharepoint.com/sites/team/Shared%20Documents/notes.docx' });
+
+    assert.ok(!('isError' in result));
+    assert.equal(graphGetCalls.length, 1);
+    assert.ok(graphGetCalls[0]!.endpoint.startsWith('/shares/u!'));
+    assert.ok(graphGetCalls[0]!.endpoint.endsWith('/driveItem'));
+    const structured = result.structuredContent as Record<string, unknown>;
+    assert.equal(structured.name, 'notes.docx');
+    assert.equal(structured.mime_type, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    assert.equal(structured.download_url, 'https://download.example.com/notes.docx');
+  });
+
+  it('downloads text content inline from a shared URL', async () => {
+    graphGetResponse = {
+      id: 'item-url-2',
+      name: 'notes.txt',
+      size: 11,
+      file: { mimeType: 'text/plain' },
+      webUrl: 'https://contoso.sharepoint.com/sites/team/Shared%20Documents/notes.txt',
+    };
+    fetchResponse = { ok: true, status: 200, buffer: Buffer.from('hello world'), contentType: 'text/plain' };
+
+    const result = await callGetFileByUrl({
+      url: 'https://contoso.sharepoint.com/sites/team/Shared%20Documents/notes.txt',
+      mode: 'inline',
+    });
+
+    assert.ok(!('isError' in result));
+    assert.equal(fetchCalls.length, 1);
+    assert.ok(fetchCalls[0]!.url.includes('/shares/u!'));
+    assert.ok(fetchCalls[0]!.url.endsWith('/driveItem/content'));
+    const structured = result.structuredContent as Record<string, unknown>;
+    assert.equal(structured.encoding, 'text');
+    assert.equal(structured.content, 'hello world');
+  });
+
+  it('rejects non-SharePoint and non-OneDrive URLs', async () => {
+    await assert.rejects(
+      () => callGetFileByUrl({ url: 'https://example.com/file.txt' }),
+      /VALIDATION_ERROR: url must be a SharePoint or OneDrive URL/,
+    );
   });
 });
 
