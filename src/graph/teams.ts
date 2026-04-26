@@ -148,11 +148,7 @@ export function pickTranscript(transcript: GraphTranscript): Record<string, unkn
 
 // ── Chat API calls ──────────────────────────────────────────────────────────
 
-export async function listChats(
-  top: number,
-  chatType?: string,
-  expandMembers?: boolean,
-): Promise<{ chats: GraphChat[]; count: number }> {
+export async function listChats(top: number, chatType?: string, expandMembers?: boolean): Promise<{ chats: GraphChat[]; count: number }> {
   let req = getGraph()
     .api('/me/chats')
     .select('id,topic,chatType,createdDateTime,lastUpdatedDateTime,onlineMeetingInfo,lastMessagePreview,tenantId,webUrl')
@@ -228,7 +224,7 @@ export async function getMeetingTranscript(meetingId: string, transcriptId: stri
 }
 
 export async function getTranscriptContent(meetingId: string, transcriptId: string): Promise<string> {
-  const endpoint = `https://graph.microsoft.com/v1.0/me/onlineMeetings/${encodeURIComponent(meetingId)}/transcripts/${encodeURIComponent(transcriptId)}/content`;
+  const endpoint = `https://graph.microsoft.com/v1.0/me/onlineMeetings/${encodeURIComponent(meetingId)}/transcripts/${encodeURIComponent(transcriptId)}/content?$format=text/vtt`;
   const response = await graphFetch(endpoint, 'UPSTREAM_ERROR: transcript content fetch failed', {
     headers: { Accept: 'text/vtt' },
   });

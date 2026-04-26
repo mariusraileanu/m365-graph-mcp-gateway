@@ -2,6 +2,18 @@ import { getGraph } from '../auth/index.js';
 import { downloadGraphContent } from './http.js';
 import type { GraphSearchHit, GraphSearchResponse } from './types.js';
 
+const GRAPH_ROOT = 'https://graph.microsoft.com/v1.0';
+const GRAPH_SHARED_LINK_HOST_SUFFIXES = [
+  '.sharepoint.com',
+  '.sharepoint.us',
+  '.sharepoint.de',
+  '.sharepoint.cn',
+  '.sharepoint-df.com',
+  '1drv.ms',
+  'onedrive.live.com',
+  'onedrive.com',
+] as const;
+
 type GraphDriveItemFileFacet = {
   mimeType?: string;
 };
@@ -65,6 +77,31 @@ export async function getDriveItem(driveId: string, itemId: string): Promise<Gra
     .get()) as GraphDriveItem;
 }
 
+export function isGraphSharedLinkUrl(rawUrl: string): boolean {
+  let host = '';
+  try {
+    host = new URL(rawUrl).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return GRAPH_SHARED_LINK_HOST_SUFFIXES.some((suffix) => host === suffix || host.endsWith(suffix));
+}
+
+function encodeGraphShareId(rawUrl: string): string {
+  return `u!${Buffer.from(rawUrl, 'utf8').toString('base64url')}`;
+}
+
+function graphShareDriveItemPath(rawUrl: string): string {
+  return `/shares/${encodeGraphShareId(rawUrl)}/driveItem`;
+}
+
+export async function getDriveItemByUrl(rawUrl: string): Promise<GraphDriveItem> {
+  if (!isGraphSharedLinkUrl(rawUrl)) {
+    throw new Error('VALIDATION_ERROR: url must be a SharePoint or OneDrive URL');
+  }
+  return (await getGraph().api(graphShareDriveItemPath(rawUrl)).get()) as GraphDriveItem;
+}
+
 export function getDriveItemInfo(item: GraphDriveItem): DriveItemInfo {
   return {
     name: item.name || 'unknown',
@@ -78,6 +115,17 @@ export function getDriveItemInfo(item: GraphDriveItem): DriveItemInfo {
 export async function downloadDriveItemContent(driveId: string, itemId: string): Promise<Buffer> {
   const endpoint = `https://graph.microsoft.com/v1.0/drives/${encodeURIComponent(driveId)}/items/${encodeURIComponent(itemId)}/content`;
   const { buffer } = await downloadGraphContent(endpoint, 'UPSTREAM_ERROR: file download failed');
+  return buffer;
+}
+
+export async function downloadDriveItemContentByUrl(rawUrl: string): Promise<Buffer> {
+  if (!isGraphSharedLinkUrl(rawUrl)) {
+    throw new Error('VALIDATION_ERROR: url must be a SharePoint or OneDrive URL');
+  }
+  const { buffer } = await downloadGraphContent(
+    `${GRAPH_ROOT}${graphShareDriveItemPath(rawUrl)}/content`,
+    'UPSTREAM_ERROR: file download by URL failed',
+  );
   return buffer;
 }
 

@@ -1146,7 +1146,48 @@ unnecessary large downloads.
 
 ---
 
-### 8. `compose_email`
+### 8. `get_file_by_url`
+
+Access a OneDrive/SharePoint file directly from its Teams/SharePoint URL. Use
+this when Teams provides a `contentUrl` or SharePoint `webUrl` but not
+`drive_id` + `item_id`.
+
+| Parameter      | Type    | Required | Description                                                         |
+| -------------- | ------- | -------- | ------------------------------------------------------------------- |
+| `url`          | string  | yes      | SharePoint or OneDrive URL                                          |
+| `mode`         | enum    | no       | `"metadata"` (default), `"inline"`, `"binary"`, `"parsed"`          |
+| `max_chars`    | integer | no       | Max chars for `inline` and `parsed` modes (1-50000)                 |
+| `include_full` | boolean | no       | `true` for expanded file fields in metadata mode. Default: minimal. |
+
+Modes and responses match `get_file_content`; the only difference is that the
+file is resolved through Graph shares from a URL instead of `drive_id` +
+`item_id`.
+
+**Example** — resolve metadata from a Teams attachment URL:
+
+```json
+{
+  "name": "get_file_by_url",
+  "arguments": { "url": "https://contoso.sharepoint.com/sites/Team/Shared%20Documents/meeting-notes.docx" }
+}
+```
+
+**Example** — extract readable text:
+
+```json
+{
+  "name": "get_file_by_url",
+  "arguments": {
+    "url": "https://contoso.sharepoint.com/sites/Team/Shared%20Documents/meeting-notes.docx",
+    "mode": "parsed",
+    "max_chars": 30000
+  }
+}
+```
+
+---
+
+### 9. `compose_email`
 
 Compose an email: draft, send, reply, or reply-all. Write operations require `confirm=true`.
 
@@ -1234,7 +1275,7 @@ Compose an email: draft, send, reply, or reply-all. Write operations require `co
 
 ---
 
-### 9. `schedule_meeting`
+### 10. `schedule_meeting`
 
 Schedule a meeting. Supports explicit start/end times or automatic free-slot
 finding. Supports Teams meetings and agendas. Requires `confirm=true`.
@@ -1301,7 +1342,7 @@ finding. Supports Teams meetings and agendas. Requires `confirm=true`.
 
 ---
 
-### 10. `respond_to_meeting`
+### 11. `respond_to_meeting`
 
 Respond to a meeting invitation or cancel a meeting you organized. Requires
 `confirm=true` for accept/decline/cancel.
@@ -1361,7 +1402,7 @@ When `mailbox_user` is set, RSVP/cancel/reply-all-draft operations target
 
 ---
 
-### 11. `audit_list`
+### 12. `audit_list`
 
 List recent audit log entries. Records all write actions and blocked attempts.
 
@@ -1395,7 +1436,7 @@ List recent audit log entries. Records all write actions and blocked attempts.
 
 ---
 
-### 12. `list_chats`
+### 13. `list_chats`
 
 List Teams chats for the current user. Returns oneOnOne, group, and meeting
 chats. Meeting chats include `joinWebUrl` for transcript workflows.
@@ -1448,7 +1489,7 @@ chats. Meeting chats include `joinWebUrl` for transcript workflows.
 
 ---
 
-### 13. `get_chat`
+### 14. `get_chat`
 
 Get a specific Teams chat by ID. Returns full chat details including members.
 For meeting chats, includes `onlineMeetingInfo` with `joinWebUrl` needed for
@@ -1492,7 +1533,7 @@ For meeting chats, includes `onlineMeetingInfo` with `joinWebUrl` needed for
 
 ---
 
-### 14. `list_chat_messages`
+### 15. `list_chat_messages`
 
 List messages in a Teams chat. Returns messages with sender, timestamp, and body
 text. HTML bodies are stripped to plain text and truncated.
@@ -1541,7 +1582,7 @@ text. HTML bodies are stripped to plain text and truncated.
 
 ---
 
-### 15. `get_chat_message`
+### 16. `get_chat_message`
 
 Get a specific message from a Teams chat by chat ID and message ID.
 
@@ -1575,7 +1616,7 @@ Get a specific message from a Teams chat by chat ID and message ID.
 
 ---
 
-### 16. `send_chat_message`
+### 17. `send_chat_message`
 
 Send a message to an existing Teams chat. Write operation — requires
 `confirm=true`. Cannot create new chats.
@@ -1629,7 +1670,7 @@ Send a message to an existing Teams chat. Write operation — requires
 
 ---
 
-### 17. `resolve_meeting`
+### 18. `resolve_meeting`
 
 Resolve a Teams meeting `joinWebUrl` to a meeting ID. Best-effort — may fail if
 the meeting was not created with a calendar association or has expired. Use the
@@ -1675,7 +1716,7 @@ the meeting was not created with a calendar association or has expired. Use the
 
 ---
 
-### 18. `list_meeting_transcripts`
+### 19. `list_meeting_transcripts`
 
 List transcripts for a Teams meeting. Returns transcript metadata (not content).
 If transcription was not enabled or the meeting expired, returns
@@ -1734,7 +1775,7 @@ Possible `reason` values:
 
 ---
 
-### 19. `get_meeting_transcript`
+### 20. `get_meeting_transcript`
 
 Get metadata for a specific meeting transcript. Returns transcript details
 without content. Use `get_transcript_content` to retrieve the actual WebVTT.
@@ -1768,17 +1809,63 @@ without content. Use `get_transcript_content` to retrieve the actual WebVTT.
 
 ---
 
-### 20. `get_transcript_content`
+### 21. `get_latest_meeting_transcript`
+
+One-step helper for Teams transcript workflows. Given a meeting title/query,
+Teams join URL, or `meeting_id`, finds the meeting, selects the newest
+transcript, and returns WebVTT content.
+
+| Parameter      | Type    | Required | Description                                                |
+| -------------- | ------- | -------- | ---------------------------------------------------------- |
+| `query`        | string  | no       | Meeting title/query to match against recent meeting chats  |
+| `join_web_url` | string  | no       | Teams join URL                                             |
+| `meeting_id`   | string  | no       | Graph online meeting ID                                    |
+| `top`          | integer | no       | Meeting chats to inspect for query mode (1-50, default 50) |
+| `max_chars`    | integer | no       | Max chars for content (1-50000, default full content)      |
+
+At least one of `query`, `join_web_url`, or `meeting_id` is required.
+
+**Required scopes**: `Chat.Read`, `OnlineMeetings.Read`,
+`OnlineMeetingTranscript.Read.All` depending on input path.
+
+**Example**:
+
+```json
+{ "name": "get_latest_meeting_transcript", "arguments": { "query": "weekly sync", "max_chars": 20000 } }
+```
+
+**Response**:
+
+```json
+{
+  "available": true,
+  "meeting_id": "MSoxOjFfYWJj...",
+  "transcript_id": "MSMjMCMj...",
+  "format": "text/vtt",
+  "content": "WEBVTT\n\n00:00:00.000 --> 00:00:05.000\n<v Jane Doe>Welcome everyone.",
+  "truncated": false,
+  "content_length": 87,
+  "meeting": {
+    "id": "MSoxOjFfYWJj...",
+    "subject": "Weekly Sync",
+    "join_web_url": "https://teams.microsoft.com/l/meetup-join/..."
+  }
+}
+```
+
+---
+
+### 22. `get_transcript_content`
 
 Get the WebVTT content of a meeting transcript. Returns plain text with
 timestamps and speaker tags (`<v Speaker>`). If the transcript is not available,
 returns `available=false` with a reason instead of throwing.
 
-| Parameter       | Type    | Required | Description                                          |
-| --------------- | ------- | -------- | ---------------------------------------------------- |
-| `meeting_id`    | string  | yes      | Meeting ID                                           |
-| `transcript_id` | string  | yes      | Transcript ID                                        |
-| `max_chars`     | integer | no       | Max chars for content (1-50000, default from config) |
+| Parameter       | Type    | Required | Description                                                   |
+| --------------- | ------- | -------- | ------------------------------------------------------------- |
+| `meeting_id`    | string  | yes      | Meeting ID                                                    |
+| `transcript_id` | string  | no       | Transcript ID. If omitted, the newest transcript is selected. |
+| `max_chars`     | integer | no       | Max chars for content (1-50000, default from config)          |
 
 **Required scopes**: `OnlineMeetingTranscript.Read.All` (delegated)
 
@@ -1815,7 +1902,7 @@ returns `available=false` with a reason instead of throwing.
 
 ---
 
-### 21. `retrieve_context`
+### 23. `retrieve_context`
 
 Semantic search across Microsoft 365 content using the Copilot Retrieval API.
 Returns relevant text extracts with relevance scores from SharePoint, OneDrive
@@ -1920,7 +2007,7 @@ relevant content across the user's M365 tenant.
 
 ---
 
-### 22. `retrieve_context_multi`
+### 24. `retrieve_context_multi`
 
 Batched semantic search — send up to 20 queries in a single Graph `$batch`
 call. All queries share the same `data_source` and optional filter. Returns an
@@ -2004,25 +2091,25 @@ multiple topics simultaneously.
 
 All scopes are **delegated user auth** — not application-only.
 
-| Scope                              | Tools                                                                                                 |
-| ---------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `Mail.Read`                        | `find` (mail), `get_email`, `get_email_thread`                                                        |
-| `Mail.Read.Shared`                 | `find` (mail with `mailbox_user`), `get_email`/`get_email_thread` with `mailbox_user`                 |
-| `Mail.ReadWrite`                   | `compose_email` (draft)                                                                               |
-| `Mail.ReadWrite.Shared`            | `compose_email` (draft/reply in shared mailbox with `mailbox_user`)                                   |
-| `Mail.Send`                        | `compose_email` (send, reply, reply_all)                                                              |
-| `Mail.Send.Shared`                 | `compose_email` (send/reply/reply_all in shared mailbox with `mailbox_user`)                          |
-| `Calendars.Read`                   | `find` (events), `get_event`                                                                          |
-| `Calendars.Read.Shared`            | `find` (events from shared calendars)                                                                 |
-| `Calendars.ReadWrite`              | `schedule_meeting`, `respond_to_meeting`                                                              |
-| `Calendars.ReadWrite.Shared`       | `schedule_meeting` / `respond_to_meeting` with `mailbox_user`                                         |
-| `User.Read`                        | `auth` (whoami, status)                                                                               |
-| `Files.Read.All`                   | `find` (files), `get_file_metadata`, `get_file_content`, `retrieve_context`, `retrieve_context_multi` |
-| `Sites.Read.All`                   | `find` (files on SharePoint), `retrieve_context`, `retrieve_context_multi`                            |
-| `Chat.Read`                        | `list_chats`, `get_chat`, `list_chat_messages`, `get_chat_message`                                    |
-| `ChatMessage.Send`                 | `send_chat_message`                                                                                   |
-| `OnlineMeetings.Read`              | `resolve_meeting`                                                                                     |
-| `OnlineMeetingTranscript.Read.All` | `list_meeting_transcripts`, `get_meeting_transcript`, `get_transcript_content`                        |
+| Scope                              | Tools                                                                                                                    |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `Mail.Read`                        | `find` (mail), `get_email`, `get_email_thread`                                                                           |
+| `Mail.Read.Shared`                 | `find` (mail with `mailbox_user`), `get_email`/`get_email_thread` with `mailbox_user`                                    |
+| `Mail.ReadWrite`                   | `compose_email` (draft)                                                                                                  |
+| `Mail.ReadWrite.Shared`            | `compose_email` (draft/reply in shared mailbox with `mailbox_user`)                                                      |
+| `Mail.Send`                        | `compose_email` (send, reply, reply_all)                                                                                 |
+| `Mail.Send.Shared`                 | `compose_email` (send/reply/reply_all in shared mailbox with `mailbox_user`)                                             |
+| `Calendars.Read`                   | `find` (events), `get_event`                                                                                             |
+| `Calendars.Read.Shared`            | `find` (events from shared calendars)                                                                                    |
+| `Calendars.ReadWrite`              | `schedule_meeting`, `respond_to_meeting`                                                                                 |
+| `Calendars.ReadWrite.Shared`       | `schedule_meeting` / `respond_to_meeting` with `mailbox_user`                                                            |
+| `User.Read`                        | `auth` (whoami, status)                                                                                                  |
+| `Files.Read.All`                   | `find` (files), `get_file_metadata`, `get_file_content`, `get_file_by_url`, `retrieve_context`, `retrieve_context_multi` |
+| `Sites.Read.All`                   | `find` (files on SharePoint), `retrieve_context`, `retrieve_context_multi`                                               |
+| `Chat.Read`                        | `list_chats`, `get_chat`, `list_chat_messages`, `get_chat_message`, `get_latest_meeting_transcript`                      |
+| `ChatMessage.Send`                 | `send_chat_message`                                                                                                      |
+| `OnlineMeetings.Read`              | `resolve_meeting`, `get_latest_meeting_transcript`                                                                       |
+| `OnlineMeetingTranscript.Read.All` | `list_meeting_transcripts`, `get_meeting_transcript`, `get_latest_meeting_transcript`, `get_transcript_content`          |
 
 ---
 
@@ -2128,6 +2215,22 @@ To extract text from an Office document or PDF:
 > (title, author, page/slide count). Use `inline` for plain text files (`.md`,
 > `.txt`, `.json`, `.csv`). Use `metadata` when you just need the download URL.
 
+### "Read a Teams or SharePoint file link"
+
+Use `get_file_by_url` when the user or Teams message provides a SharePoint or
+OneDrive URL directly and no `drive_id`/`item_id` is available.
+
+```json
+{
+  "name": "get_file_by_url",
+  "arguments": {
+    "url": "https://contoso.sharepoint.com/sites/Team/Shared%20Documents/meeting-notes.docx",
+    "mode": "parsed",
+    "max_chars": 30000
+  }
+}
+```
+
 ### "Catch me up on an email conversation"
 
 1. Search: `find` with `query: "project kickoff from Alice"`, `entity_types: ["mail"]`
@@ -2142,6 +2245,14 @@ To extract text from an Office document or PDF:
 ```
 
 ### "Get the transcript from my last meeting"
+
+Preferred one-step flow when the user provides a meeting title/query:
+
+```json
+{ "name": "get_latest_meeting_transcript", "arguments": { "query": "weekly sync", "max_chars": 20000 } }
+```
+
+Manual workflow when the meeting needs explicit resolution:
 
 This is a multi-step workflow because there is no direct "list my meeting
 transcripts" endpoint. Discovery goes through chat → meeting → transcripts.
@@ -2284,8 +2395,8 @@ If it is `America/New_York`, use `-05:00` (standard) or `-04:00` (DST).
 By default, responses include only high-signal fields (IDs, subject/title,
 sender/organizer, timestamps, links, short snippets).
 
-Pass `include_full=true` on `get_email`, `get_event`, `get_email_thread`, and
-`get_file_metadata` to expand:
+Pass `include_full=true` on `get_email`, `get_event`, `get_email_thread`,
+`get_file_metadata`, and `get_file_by_url` to expand:
 
 - **Email**: full body text, all recipients (to, cc), conversation ID, web link
 - **Event**: full attendee list with response status, body preview, online meeting details
